@@ -1,7 +1,7 @@
 /* app.js — interfaccia del Magazzino scolastico. Logica in core.js, import in importa.js/leggi.js, sync in github.js. */
 (function () {
   'use strict';
-  const APP_VERSION = '2.5.0';
+  const APP_VERSION = '2.6.0';
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -816,33 +816,59 @@
     lezione: 'Lezione', righe: 'Ingredienti', qb: 'Ingredienti q.b.', descrizione: 'Descrizione', settimana: 'Settimana', stato: 'Stato',
     voci: 'Piani della settimana', sedeCentrale: 'Sede del magazzino centrale', del: 'Eliminato' };
   const TIPI = { articoli: 'Prodotto', piani: 'Piano di lavoro', ordini: 'Ordine', impostazioni: 'Impostazioni' };
-  function valoreConflitto(c, v) {
-    if (c.campo === 'del') return v ? '<b>eliminato</b>' : 'tenuto (con le modifiche)';
-    if (c.campo.startsWith('riga:')) return fq(v, (Core.byId(S.articoli, c.campo.slice(5)) || {}).unita || 'pz');
-    if (v == null || v === '') return '<i>vuoto</i>';
-    if (c.campo === 'pezzo' || c.campo === 'confezione') return fq(v.qta, v.unita);
-    if (c.campo === 'unita') return esc(ul(v));
-    if (c.campo === 'settimana') return Core.fmtData(v);
-    if (c.campo === 'voci') return v.map(x => { const p = S.piani.find(y => y.id === x.pianoId); return esc((p && p.nome) || '?') + ' × ' + x.classi + (x.sede ? ' (' + esc(x.sede) + ')' : ''); }).join('<br>') || '<i>nessuno</i>';
-    if (c.campo === 'righe') return v.length + ' righe';
+  function valoreConflitto(campo, v) {
+    if (campo === 'del') return v ? '<b>eliminato</b>' : 'presente';
+    if (v == null || v === '' || (Array.isArray(v) && !v.length)) return campo.startsWith('riga:') ? '<i>calcolata dai piani</i>' : '<i>vuoto</i>';
+    if (campo === 'pezzo' || campo === 'confezione') return fq(v.qta, v.unita);
+    if (campo === 'unita') return esc(ul(v));
+    if (campo === 'settimana') return Core.fmtData(v);
+    if (campo === 'voci') return v.map(x => { const p = S.piani.find(y => y.id === x.pianoId); return esc((p && p.nome) || '?') + ' × ' + x.classi + (x.sede ? ' (' + esc(x.sede) + ')' : ''); }).join('<br>');
+    if (campo.startsWith('riga:')) { const a = S.articoli.find(y => y.id === campo.slice(5)); return fq(v.daOrdinare, (a && a.unita) || 'pz') + (v.extra ? ' (aggiunto a mano)' : ''); }
+    if (campo === 'righe') return v.length + ' ingredienti';
     if (Array.isArray(v)) return esc(v.join(', '));
     return esc(typeof v === 'object' ? JSON.stringify(v) : v);
   }
+  const nomeCampo = k => k.startsWith('riga:') ? 'Da ordinare – ' + ((S.articoli.find(a => a.id === k.slice(5)) || {}).nome || '?') : CAMPI[k] || ({ righe: 'Quantità cambiate a mano', alias: 'Nomi nei piani', categorie: 'Categorie', fornitori: 'Fornitori', sedi: 'Sedi', sezioni: 'Sezioni dei file' })[k] || k;
   function openConflitti() {
     const lista = Core.conflittiAperti(S);
     if (!lista.length) { toast('Nessun conflitto da risolvere'); return; }
     hideToast();
+    const io = nomeDispositivo();
     const quando = x => x.u ? new Date(x.u).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-    const lato = (c, k) => { const x = c[k]; return `<label class="scelta"><input type="radio" name="${esc(c.id)}" value="${k}" ${c.scelto === k ? 'checked' : ''}>
-      <span><span class="muted">${esc(x.d || (k === 'a' ? 'Versione A' : 'Versione B'))}${x.u ? ' · ' + quando(x) : ''}${c.scelto === k ? ' · <b>in uso ora</b>' : ''}</span><br>${valoreConflitto(c, x.v)}</span></label>`; };
+    const chi = x => `${esc(x.d || 'Dispositivo sconosciuto')}${x.d === io ? ' (questo)' : ''}${x.u ? ' · ' + quando(x) : ''}`;
+    const scheda = (c, i) => {
+      const diff = Core.campiDiversi(c);
+      const versione = k => `<label class="scelta"><input type="radio" name="c${i}" value="${k}" ${c.scelto === k ? 'checked' : ''}>
+        <span><span class="muted">Tieni la versione di <b>${chi(c[k])}</b>${c.scelto === k ? ' · in uso ora' : ''}</span>
+        ${diff.map(f => `<div class="campo"><span class="muted">${esc(nomeCampo(f.campo))}:</span> ${valoreConflitto(f.campo, f[k])}</div>`).join('')}</span></label>`;
+      return `<div class="card conflitto" data-i="${i}"><div><b>${TIPI[c.tipo] || ''}: ${esc(c.nome || '')}</b></div>
+        <div class="scelte">${versione('a')}${versione('b')}
+        <label class="scelta"><input type="radio" name="c${i}" value="m"><span><b>Unisci</b> <span class="muted">— scegli campo per campo</span></span></label>
+        <div class="unione" hidden>${diff.map(f => `<div class="campo-u"><div class="muted">${esc(nomeCampo(f.campo))}</div><div class="row wrap">
+          ${['a', 'b'].map(k => `<label class="chip-r"><input type="radio" name="c${i}-${esc(f.campo)}" value="${k}" ${f.sugg === k ? 'checked' : ''}><span>${valoreConflitto(f.campo, f[k])} <small class="muted">${esc(c[k].d || (k === 'a' ? 'A' : 'B'))}</small></span></label>`).join('')}</div></div>`).join('')}</div></div></div>`;
+    };
     openSheet(`<h3>Conflitti di sincronizzazione</h3>
-      <p class="muted">Queste cose sono state cambiate su due dispositivi prima che si sincronizzassero. Per ora l'app usa la modifica più recente: scegli quale tenere e conferma. Le altre modifiche sono già state unite da sole.</p>
-      ${lista.map(c => `<div class="card conflitto"><div><b>${TIPI[c.tipo] || ''}: ${esc(c.riga || c.nome || '')}</b> — ${esc(c.campo.startsWith('riga:') ? 'Da ordinare' : CAMPI[c.campo] || c.campo)}</div>
-        <div class="scelte">${lato(c, 'a')}${lato(c, 'b')}</div></div>`).join('')}
+      <p class="muted">Queste cose sono state modificate su due dispositivi prima che si sincronizzassero. Per ora l'app usa la versione più recente. Puoi tenere una delle due versioni per intero (anche per scartare modifiche vecchie) oppure unirle scegliendo campo per campo. Carichi e scarichi di magazzino restano comunque tutti.</p>
+      <div class="row wrap"><button class="btn sec sm" data-tutte="io">Tieni ovunque quelle di questo dispositivo</button><button class="btn sec sm" data-tutte="altro">Tieni ovunque quelle dell'altro</button></div>
+      ${lista.map(scheda).join('')}
       <div class="actions"><button class="btn" id="confOk">Conferma le scelte</button><button class="btn sec" id="confDopo">Decido dopo</button></div>`, true);
+    sheet.onchange = e => { const card = e.target.closest('.conflitto'); if (card && /^c\d+$/.test(e.target.name)) $('.unione', card).hidden = e.target.value !== 'm'; };
+    sheet.onclick = e => {
+      const t = e.target.closest('[data-tutte]'); if (!t) return;
+      lista.forEach((c, i) => {
+        const mio = c.a.d === io ? 'a' : c.b.d === io ? 'b' : null;
+        if (!mio) return;
+        const k = t.dataset.tutte === 'io' ? mio : mio === 'a' ? 'b' : 'a';
+        const r = sheet.querySelector(`input[name="c${i}"][value="${k}"]`); r.checked = true; $('.unione', r.closest('.conflitto')).hidden = true;
+      });
+    };
     $('#confDopo').onclick = closeSheet;
     $('#confOk').onclick = () => {
-      for (const c of lista) { const r = sheet.querySelector(`input[name="${CSS.escape(c.id)}"]:checked`); Core.risolviConflitto(S, c.id, r ? r.value : c.scelto); }
+      lista.forEach((c, i) => {
+        const r = sheet.querySelector(`input[name="c${i}"]:checked`), scelta = r ? r.value : c.scelto, campi = {};
+        if (scelta === 'm') for (const f of Core.campiDiversi(c)) { const x = sheet.querySelector(`input[name="c${i}-${CSS.escape(f.campo)}"]:checked`); if (x) campi[f.campo] = x.value; }
+        Core.risolviConflitto(S, c.id, scelta, campi);
+      });
       save(); closeSheet(); toast('Fatto: le scelte arrivano anche sugli altri dispositivi');
     };
   }

@@ -688,11 +688,10 @@
   // ---------- Sync / merge ----------
   /**
    * Unisce lo stato locale con quello remoto.
-   * Con `base` (lo stato dell'ultima sincronizzazione riuscita di questo dispositivo) l'unione è campo per campo:
-   * un campo cambiato da una parte sola prende quel valore; cambiato da entrambe in modo diverso è un conflitto:
-   * si tiene per ora la versione più recente e si aggiunge a `conflitti`, perché l'utente scelga.
-   * Le giacenze si sommano (sono fatte di movimenti), i nomi riconosciuti e gli elenchi di Impostazioni si uniscono.
-   * Senza base (prima sincronizzazione) vince per ogni record la modifica più recente.
+   * Con `base` (lo stato dell'ultima sincronizzazione riuscita di questo dispositivo): un record cambiato da una parte
+   * sola prende quella versione; cambiato da entrambe è un conflitto (vedi unisciRecord) che l'utente risolve tenendo
+   * una delle due versioni o unendole campo per campo. Le giacenze si sommano sempre (sono fatte di movimenti).
+   * Senza base (prima sincronizzazione) vince per ogni record la modifica più recente e gli elenchi si uniscono.
    */
   function merge(local, remote, base) {
     // copie: l'unione non deve modificare lo stato in uso (altrimenti un tentativo fallito lascia giacenze già corrette)
@@ -726,9 +725,11 @@
       for (const m of out.movimenti) if (!baseM.has(m.id)) delta.set(m.articoloId, (delta.get(m.articoloId) || 0) + num(m.delta));
       out.articoli = out.articoli.map(a => { const b = BA.get(a.id); return b && !a.del && inEntrambi(local, remote, a.id) ? { ...a, giacenza: round3(num(b.giacenza) + (delta.get(a.id) || 0)) } : a; });
     }
-    // senza base (prima sincronizzazione di un dispositivo) gli elenchi si uniscono senza togliere nulla
-    out.impostazioni = unisciImpostazioni(local.impostazioni, remote.impostazioni,
-      base ? base.impostazioni : { categorie: [], fornitori: [], sedi: [], sezioni: {}, sedeCentrale: '' }, nuovi);
+    if (base) {
+      const imp = x => ({ ...x, id: 'impostazioni', nome: 'Impostazioni' });
+      out.impostazioni = { ...unisciRecord('impostazioni', imp(local.impostazioni), imp(remote.impostazioni), imp(base.impostazioni), nuovi) };
+      delete out.impostazioni.id; delete out.impostazioni.nome;
+    } else out.impostazioni = unisciPrimaVolta(local.impostazioni, remote.impostazioni);
     // conflitti: quelli già noti (da entrambe le parti, vince l'aggiornamento più recente) + i nuovi
     const cm = new Map();
     for (const c of [...remote.conflitti, ...local.conflitti, ...nuovi]) { const cur = cm.get(c.id); if (!cur || (c.u || '') > (cur.u || '')) cm.set(c.id, c); }
@@ -747,96 +748,91 @@
   const uguale = (a, b) => stabile(a) === stabile(b);
   const NON_DATI = new Set(['u', 'd']);
   const senza = (o, ...k) => { const c = { ...o }; for (const x of [...NON_DATI, ...k]) delete c[x]; return c; };
-  /** Valore unito di un campo: 3 vie; null = conflitto. */
-  function treVie(lv, rv, bv) {
-    if (uguale(lv, rv)) return { v: lv };
-    if (uguale(lv, bv)) return { v: rv };
-    if (uguale(rv, bv)) return { v: lv };
-    return null;
-  }
   /** Unione a 3 vie di elenchi di testi (aggiunte e tolte da entrambe le parti). */
   function unisciElenco(l = [], r = [], b = []) {
     const tolti = new Set([...b.filter(x => !l.includes(x)), ...b.filter(x => !r.includes(x))]);
     return [...new Set([...l, ...r])].filter(x => !tolti.has(x));
   }
-  function conflitto(nuovi, tipo, l, r, campo, lv, rv, scelto, extra) {
-    const c = { id: [tipo, l.id, campo, stabile(lv), stabile(rv)].join('|'), tipo, recId: l.id, nome: r.nome || l.nome || '', campo,
-      a: { v: lv, d: l.d || '', u: l.u || '' }, b: { v: rv, d: r.d || '', u: r.u || '' }, scelto, risolto: false, data: now(), u: now(), ...extra };
+  function hash(str) { let h = 5381; for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0; return (h >>> 0).toString(36); }
+  /** Quello che conta per capire se un record è stato modificato: niente data/dispositivo, niente giacenza
+   *  (fatta di movimenti), e degli ordini solo le quantità cambiate a mano (il resto si ricalcola). */
+  function confronto(tipo, rec) {
+    const c = senza(rec, 'id');
+    if (tipo === 'articoli') delete c.giacenza;
+    if (tipo === 'ordini') { // una voce per ogni quantità cambiata a mano: nell'unione si sceglie prodotto per prodotto
+      delete c.righe;
+      for (const x of rec.righe || []) if (x.manuale || x.extra) c['riga:' + x.articoloId] = { daOrdinare: x.daOrdinare, extra: !!x.extra };
+    }
+    if (tipo === 'impostazioni') delete c.nome;
+    return c;
+  }
+  /** Campi diversi tra le due versioni di un conflitto: [{campo, a, b, sugg}]; sugg = da quale versione prenderlo
+   *  se si uniscono (quella che l'ha cambiato rispetto all'ultima sincronizzazione; se l'hanno cambiato entrambe, la più recente). */
+  function campiDiversi(c) {
+    const a = confronto(c.tipo, c.a.v || {}), b = confronto(c.tipo, c.b.v || {});
+    return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => !uguale(a[k], b[k]))
+      .map(k => ({ campo: k, a: a[k], b: b[k], sugg: (c.sugg || {})[k] || c.recente || c.scelto }));
+  }
+  function conflitto(nuovi, tipo, l, r, scelto, base) {
+    const a = senza(l), b = senza(r), cb = base ? confronto(tipo, base) : {};
+    const ca = confronto(tipo, a), cr = confronto(tipo, b), recente = (l.u || '') >= (r.u || '') ? 'a' : 'b', sugg = {};
+    for (const k of new Set([...Object.keys(ca), ...Object.keys(cr)])) if (!uguale(ca[k], cr[k])) sugg[k] = uguale(ca[k], cb[k]) ? 'b' : uguale(cr[k], cb[k]) ? 'a' : recente;
+    const c = { id: [tipo, l.id, hash(stabile(ca)), hash(stabile(cr))].join('|'), tipo, recId: l.id, nome: r.nome || l.nome || '',
+      a: { v: a, d: l.d || '', u: l.u || '' }, b: { v: b, d: r.d || '', u: r.u || '' }, scelto, recente, sugg, risolto: false, data: now(), u: now() };
     nuovi.push(c);
     return c;
   }
+  /** Record presente nei due stati e nella base. Cambiato da una parte sola: passa quella versione.
+   *  Cambiato da entrambe (anche in campi diversi): niente unione automatica, l'utente sceglie la versione intera;
+   *  intanto resta la più recente (o, se una parte l'ha eliminato, quella che lo tiene). */
   function unisciRecord(k, l, r, b, nuovi) {
-    if (uguale(senza(l), senza(r))) return (l.u || '') >= (r.u || '') ? l : r;
-    const recente = (l.u || '') >= (r.u || '') ? 'a' : 'b';
-    // eliminato da una parte e modificato dall'altra: per sicurezza resta, e l'utente decide
-    if (!!l.del !== !!r.del) {
-      const [cancellato, altro] = l.del ? [l, r] : [r, l];
-      if (uguale(senza(altro, 'del'), senza(b, 'del'))) return cancellato;
-      conflitto(nuovi, k, l, r, 'del', !!l.del, !!r.del, l.del ? 'b' : 'a');
-      return { ...altro, u: now() };
-    }
-    const res = {};
-    for (const key of new Set([...Object.keys(b), ...Object.keys(l), ...Object.keys(r)])) {
-      if (NON_DATI.has(key)) continue;
-      const lv = l[key], rv = r[key], bv = b[key];
-      if (k === 'articoli' && key === 'giacenza') { res.giacenza = lv; continue; } // ricalcolata dai movimenti in merge
-      if (k === 'articoli' && key === 'alias') { res.alias = unisciElenco(lv, rv, bv); continue; }
-      if (k === 'ordini' && key === 'righe') { res.righe = unisciRighe(l, r, b, recente, nuovi); continue; }
-      const t = treVie(lv, rv, bv);
-      if (t) { if (t.v !== undefined) res[key] = t.v; continue; }
-      conflitto(nuovi, k, l, r, key, lv, rv, recente);
-      if ((recente === 'a' ? lv : rv) !== undefined) res[key] = recente === 'a' ? lv : rv;
-    }
-    res.u = now(); res.d = (recente === 'a' ? l : r).d || '';
-    if (!res.d) delete res.d;
+    const cl = confronto(k, l), cr = confronto(k, r), cb = confronto(k, b);
+    if (uguale(cl, cr)) return (l.u || '') >= (r.u || '') ? l : r;
+    if (uguale(cl, cb)) return r;
+    if (uguale(cr, cb)) return l;
+    const recente = !!l.del !== !!r.del ? (l.del ? 'b' : 'a') : (l.u || '') >= (r.u || '') ? 'a' : 'b';
+    conflitto(nuovi, k, l, r, recente, b);
+    return recente === 'a' ? l : r;
+  }
+  /** Prima sincronizzazione di un dispositivo (senza base): gli elenchi si uniscono, niente si cancella. */
+  function unisciPrimaVolta(l, r) {
+    const [nuovo, vecchio] = (l.u || '') >= (r.u || '') ? [l, r] : [r, l];
+    const res = { ...nuovo };
+    for (const k of ['categorie', 'fornitori', 'sedi']) res[k] = unisciElenco(l[k], r[k], []);
+    res.sezioni = { ...(vecchio.sezioni || {}), ...(nuovo.sezioni || {}) };
+    res.sedeCentrale = nuovo.sedeCentrale || vecchio.sedeCentrale || '';
     return res;
   }
-  /** Righe d'ordine: si ricalcolano da sole; contano solo le quantità cambiate a mano e le righe aggiunte a mano. */
-  function unisciRighe(l, r, b, recente, nuovi) {
-    const base = perId((b.righe || []).map(x => ({ ...x, id: x.articoloId })));
-    const altre = perId(((recente === 'a' ? r : l).righe || []).map(x => ({ ...x, id: x.articoloId })));
-    const righe = ((recente === 'a' ? l : r).righe || []).map(x => ({ ...x }));
-    for (const x of righe) {
-      const y = altre.get(x.articoloId), z = base.get(x.articoloId);
-      if (!y) continue;
-      const q = rr => ({ daOrdinare: rr.daOrdinare, manuale: !!rr.manuale });
-      const [rx, ry] = recente === 'a' ? [x, y] : [y, x];
-      const t = treVie(q(rx), q(ry), z ? q(z) : undefined);
-      if (t) Object.assign(x, t.v);
-      else if (rx.manuale && ry.manuale) conflitto(nuovi, 'ordini', l, r, 'riga:' + x.articoloId, rx.daOrdinare, ry.daOrdinare, recente, { riga: x.nome });
-    }
-    // righe aggiunte a mano solo dall'altra parte
-    for (const y of altre.values()) if (y.extra && !righe.some(x => x.articoloId === y.articoloId) && !base.has(y.articoloId)) { const c = { ...y }; delete c.id; righe.push(c); }
-    return righe;
-  }
-  function unisciImpostazioni(l, r, b, nuovi) {
-    const res = { ...((l.u || '') >= (r.u || '') ? l : r) };
-    for (const k of ['categorie', 'fornitori', 'sedi']) res[k] = unisciElenco(l[k], r[k], b[k]);
-    res.sezioni = { ...b.sezioni };
-    for (const k of new Set([...Object.keys(l.sezioni || {}), ...Object.keys(r.sezioni || {}), ...Object.keys(b.sezioni || {})])) {
-      const t = treVie((l.sezioni || {})[k], (r.sezioni || {})[k], (b.sezioni || {})[k]);
-      const v = t ? t.v : ((l.u || '') >= (r.u || '') ? l.sezioni : r.sezioni)[k];
-      if (v === undefined) delete res.sezioni[k]; else res.sezioni[k] = v;
-    }
-    const t = treVie(l.sedeCentrale, r.sedeCentrale, b.sedeCentrale);
-    if (t) res.sedeCentrale = t.v;
-    else conflitto(nuovi, 'impostazioni', { ...l, id: 'impostazioni' }, { ...r, id: 'impostazioni', nome: 'Impostazioni' }, 'sedeCentrale', l.sedeCentrale, r.sedeCentrale, (l.u || '') >= (r.u || '') ? 'a' : 'b');
-    if (!uguale(senza(res), senza(l)) && !uguale(senza(res), senza(r))) res.u = now();
-    return res;
-  }
-  /** Applica la scelta dell'utente per un conflitto ('a' o 'b'). */
-  function risolviConflitto(state, id, scelta) {
+  /** Applica la scelta dell'utente per un conflitto: 'a' o 'b' = quella versione per intero;
+   *  'm' = unione: per ogni campo diverso la versione indicata in `campi` ({campo: 'a'|'b'}, default: il suggerimento). */
+  function risolviConflitto(state, id, scelta, campi) {
     const c = state.conflitti.find(x => x.id === id);
     if (!c) return;
-    if (scelta !== c.scelto) {
-      const v = (scelta === 'a' ? c.a : c.b).v;
-      if (c.tipo === 'impostazioni') { state.impostazioni[c.campo] = v; touchImpostazioni(state); }
-      else {
+    let v;
+    if (scelta === 'm') {
+      v = { ...(c.recente === 'b' ? c.b : c.a).v };
+      for (const f of campiDiversi(c)) {
+        const da = (campi || {})[f.campo] || f.sugg, src = (da === 'a' ? c.a : c.b).v;
+        if (f.campo.startsWith('riga:')) {
+          const id = f.campo.slice(5), rs = (src.righe || []).find(x => x.articoloId === id);
+          v.righe = (v.righe || []).map(x => ({ ...x }));
+          const i = v.righe.findIndex(x => x.articoloId === id);
+          if (rs && (rs.manuale || rs.extra)) { if (i >= 0) v.righe[i] = { ...rs }; else v.righe.push({ ...rs }); }
+          else if (i >= 0) { if (v.righe[i].extra) v.righe.splice(i, 1); else Object.assign(v.righe[i], { manuale: false, daOrdinare: v.righe[i].suggerito }); }
+        } else if (src[f.campo] === undefined) delete v[f.campo]; else v[f.campo] = src[f.campo];
+      }
+    } else if (scelta !== c.scelto) v = { ...(scelta === 'a' ? c.a : c.b).v };
+    if (v) {
+      if (c.tipo === 'impostazioni') {
+        delete v.id; delete v.nome;
+        state.impostazioni = Object.assign(emptyState().impostazioni, v); touchImpostazioni(state);
+      } else {
         const rec = state[c.tipo].find(x => x.id === c.recId);
         if (rec) {
-          if (c.campo === 'del') { if (v) rec.del = true; else delete rec.del; }
-          else if (c.campo.startsWith('riga:')) { const rg = (rec.righe || []).find(x => x.articoloId === c.campo.slice(5)); if (rg) { rg.daOrdinare = v; rg.manuale = true; } }
-          else if (v === undefined) delete rec[c.campo]; else rec[c.campo] = v;
+          const tieni = { id: rec.id, giacenza: rec.giacenza, u: rec.u }; // la giacenza viene dai movimenti, non dalla scheda
+          for (const k of Object.keys(rec)) delete rec[k];
+          Object.assign(rec, v, { id: tieni.id, u: tieni.u });
+          if (c.tipo === 'articoli') rec.giacenza = tieni.giacenza;
           touch(rec);
         }
       }
@@ -869,5 +865,5 @@
     righeOrdine, quoteSedi, quotaMagazzino, multiploAcquisto, arrotondaConfezione, confezioniDi, qbOrdine, addOrdine, updateOrdine, ricalcolaOrdine, setDaOrdinare, addRigaExtra, deleteOrdine, riceviOrdine,
     sediOrdine, testoOrdine, csvOrdine,
     lunediProssimo, lunediDi, fmtData, annoScolastico, toCSV, parseCSV, esportaArticoliCSV, merge, compatta, riepilogo,
-    setDispositivo, risolviConflitto, conflittiAperti };
+    setDispositivo, risolviConflitto, conflittiAperti, campiDiversi };
 });

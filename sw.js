@@ -1,5 +1,5 @@
 /* Service worker: cache offline dell'app (alzare CACHE a ogni release). */
-const CACHE = 'magazzino-v9';
+const CACHE = 'magazzino-v10';
 const FILES = ['./', './index.html', './app.js', './core.js', './importa.js', './leggi.js', './github.js', './manifest.json', './icons/icon-192.png', './icons/icon-512.png'];
 const LIB = 'https://cdnjs.cloudflare.com/'; // pdf.js e SheetJS: caricati solo quando si importa un file, poi tenuti in cache
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
