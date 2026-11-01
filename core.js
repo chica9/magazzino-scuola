@@ -374,7 +374,7 @@
   function pulisciQb(qb) { return [...new Set((qb || []).map(x => String(x).trim()).filter(Boolean))]; }
 
   const isPezzi = art => fam(art.unita) === 'pezzi';
-  const ceilPezzi = q => Math.ceil(q - 1e-9);
+  const ceilPezzi = q => Math.ceil(q - 1e-9) || 0; // || 0: niente "-0"
 
   /**
    * Fabbisogno per articolo dato un elenco di voci {pianoId, classi, sede}.
