@@ -1,7 +1,7 @@
 /* app.js — interfaccia del Magazzino scolastico. Logica in core.js, import in importa.js/leggi.js, sync in github.js. */
 (function () {
   'use strict';
-  const APP_VERSION = '2.4.0';
+  const APP_VERSION = '2.4.1';
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -576,7 +576,22 @@
     const cont = $('#voci');
     $('#addVoce').onclick = () => { cont.insertAdjacentHTML('beforeend', $('#tplVoce').innerHTML); $('.riga-voce:last-child select', cont).focus(); };
     cont.addEventListener('click', e => { if (e.target.closest('[data-rmvoce]')) { e.target.closest('.riga-voce').remove(); onChange && onChange(); } });
-    if (onChange) cont.addEventListener('change', onChange);
+    cont.addEventListener('change', e => {
+      const r = e.target.closest('.riga-voce');
+      const classi = r && $('[name=classi]', r);
+      // scelto il piano: 1 classe come punto di partenza, così la riga è subito valida
+      if (e.target.name === 'piano' && e.target.value && classi && !(Core.num(classi.value) > 0)) classi.value = '1';
+      // una riga lasciata a metà non va salvata: ridisegnando sparirebbe mentre la si sta compilando
+      if (onChange && !vociAMeta()) onChange();
+    });
+  }
+  /** C'è una riga iniziata ma non completa (manca il piano o il numero di classi)? */
+  function vociAMeta() {
+    return $$('#voci .riga-voce').some(r => {
+      const piano = $('[name=piano]', r).value, classi = $('[name=classi]', r).value.trim(), sede = $('[name=sede]', r).value;
+      const completa = piano && Core.num(classi) > 0, vuota = !piano && !classi && !sede;
+      return !completa && !vuota;
+    });
   }
   function readVoci() { return $$('#voci .riga-voce').map(r => ({ pianoId: $('[name=piano]', r).value, classi: $('[name=classi]', r).value, sede: $('[name=sede]', r).value })).filter(v => v.pianoId && Core.num(v.classi) > 0); }
 
@@ -697,7 +712,7 @@
       if (t.id === 'ordNote') { Core.updateOrdine(S, o.id, { note: t.value }); save({ silent: true }); }
     };
     if (!chiuso) {
-      bindVoci(() => { const voci = readVoci(); Core.updateOrdine(S, o.id, { voci }); save({ silent: true }); const y = sheet.scrollTop; openOrdine(o.id); $('details.voci', sheet).open = true; sheet.scrollTop = y; });
+      bindVoci(() => { const voci = readVoci(); if (JSON.stringify(voci) === JSON.stringify(o.voci.map(v => ({ pianoId: v.pianoId, classi: String(v.classi), sede: v.sede || '' })))) return; Core.updateOrdine(S, o.id, { voci }); save({ silent: true }); const y = sheet.scrollTop; openOrdine(o.id); $('details.voci', sheet).open = true; sheet.scrollTop = y; });
       $('#extraAdd').onclick = () => {
         const nome = $('#extraArt').value.trim(), q = $('#extraQ').value;
         if (!nome) { $('#extraArt').focus(); return; }
