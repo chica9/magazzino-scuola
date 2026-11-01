@@ -355,15 +355,25 @@ test('unità minima d\'acquisto: l\'ordine arrotonda ai multipli', () => {
     { articoloId: limoni.id, qta: 1, unita: 'kg' }, { articoloId: acqua.id, qta: 7, unita: 'bott' }] });
   const o = C.addOrdine(s, { voci: [{ pianoId: p.id, classi: 1, sede: 'Centro' }, { pianoId: p.id, classi: 1, sede: 'Nord' }] });
   const r = id => o.righe.find(x => x.articoloId === id);
-  assert.deepStrictEqual([r(farina.id).netto, r(farina.id).daOrdinare], [7.2, 10]);       // 2 sacchi da 5 kg
-  assert.deepStrictEqual([r(burro.id).netto, r(burro.id).daOrdinare], [0.7, 0.75]);       // 0,4 Nord + (0,4 − 0,1) → 3 panetti
-  assert.strictEqual(r(limoni.id).daOrdinare, 2.4);                                       // 2 kg → retine da 10 limoni (1,2 kg)
-  assert.strictEqual(r(acqua.id).daOrdinare, 18);                                         // 14 bottiglie → 3 casse da 6
+  // arrotondamento sede per sede: ogni sede riceve confezioni intere
+  assert.deepStrictEqual([r(farina.id).netto, r(farina.id).invio, r(farina.id).daOrdinare], [7.2, { Nord: 5 }, 10]); // 3,6 → 5 a Nord, 3,6 → 5 al centro
+  assert.deepStrictEqual([r(burro.id).netto, r(burro.id).daOrdinare], [0.7, 1]);          // Nord 0,4 → 0,5; centro 0,4 − 0,1 → 0,5
+  assert.strictEqual(r(limoni.id).daOrdinare, 2.4);                                       // 1 kg per sede → una retina da 1,2 kg ciascuna
+  assert.strictEqual(r(acqua.id).daOrdinare, 24);                                         // 7 bottiglie per sede → 2 casse da 6 ciascuna
   assert.strictEqual(C.confezioniDi(farina, 10), '2 × 5 kg');
   assert.strictEqual(C.confezioniDi(farina, 8), '');                                      // cambiato a mano: non multiplo
   assert.match(C.testoOrdine(s, o.id, null), /Farina 00: 10 kg \(2 × 5 kg\)/);
-  // alla ricezione l'eccedenza della confezione resta al magazzino centrale
-  assert.strictEqual(C.quotaMagazzino(r(farina.id)), 6.4);                                // 10 − 3,6 per Nord
+  assert.strictEqual(C.quotaMagazzino(r(farina.id)), 5);                                  // 10 − 5 che partono per Nord
+  // aceto: serve solo a Nord, il magazzino del centro non lo copre → si ordina una bottiglia per Nord
+  const aceto = C.addArticolo(s, { nome: 'Aceto bianco', unita: 'l', giacenza: 1.2, confezione: { qta: 1, unita: 'l' } });
+  const pa = C.addPiano(s, { nome: 'PA', righe: [{ articoloId: aceto.id, qta: 360, unita: 'ml' }] });
+  const oa = C.addOrdine(s, { voci: [{ pianoId: pa.id, classi: 1, sede: 'Nord' }] });
+  assert.deepStrictEqual([oa.righe[0].netto, oa.righe[0].invio, oa.righe[0].daOrdinare], [0.36, { Nord: 1 }, 1]);
+  // ricezione: entra tutto, poi si scarica la parte per Nord
+  C.riceviOrdine(s, oa.id);
+  const mov = s.movimenti.filter(m => m.rifId === oa.id).map(m => [m.tipo, m.delta]);
+  assert.deepStrictEqual(mov, [['carico', 1], ['scarico', -1]]);
+  assert.strictEqual(C.byId(s.articoli, aceto.id).giacenza, 1.2);
   // import: colonna «Confezione»
   const doc = { nomeFile: 'p.xlsx', testo: [], tabelle: [[['Nome', 'U.M.', 'Confezione', 'Scorta minima'], ['Zucchero semolato', 'kg', '10 kg', '2'], ['Uova', 'pz', '30', '']]] };
   const an = I.analizzaArticoli(s, doc);

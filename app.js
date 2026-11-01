@@ -1,7 +1,7 @@
 /* app.js — interfaccia del Magazzino scolastico. Logica in core.js, import in importa.js/leggi.js, sync in github.js. */
 (function () {
   'use strict';
-  const APP_VERSION = '2.3.0';
+  const APP_VERSION = '2.4.0';
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -636,7 +636,7 @@
         const art = Core.byId(S.articoli, r.articoloId);
         const giac = art ? art.giacenza : r.giacenza;
         const ps = Object.entries(r.perSede || {}).filter(([, q]) => q > 0);
-        const perSede = ps.length > 1 || (ps.length === 1 && ps[0][0]) ? `<div class="persede">${ps.map(([s, q]) => `<span>${s && s === sc ? '<b>' + esc(s) + '</b> (magazzino)' : esc(s || 'sede non indicata')}: ${fq(q, r.unita)}</span>`).join('')}</div>` : '';
+        const perSede = ps.length > 1 || (ps.length === 1 && ps[0][0]) ? `<div class="persede">${ps.map(([s, q]) => { const inv = (r.invio || {})[s]; return `<span>${s && s === sc ? '<b>' + esc(s) + '</b> (magazzino)' : esc(s || 'sede non indicata')}: ${fq(q, r.unita)}${inv != null && inv !== q ? ` → <b>${fq(inv, r.unita)}</b>` : ''}</span>`; }).join('')}</div>` : '';
         const tip = r.dettaglio.map(d => `${d.nome} × ${d.classi}${d.sede ? ' (' + d.sede + ')' : ''}: ${fq(d.qta, r.unita)}`).join('\n');
         const fabb = f.sede ? (r.perSede || {})[sedeKey] || 0 : r.fabbisogno;
         const cf = art ? Core.confezioniDi(art, r.daOrdinare) : '';
@@ -660,7 +660,7 @@
         ${sedi.length > 1 || sedi[0] ? `<select id="odSede" class="${f.sede ? 'on' : ''}">${opts(sedi.map(s => s || '—'), f.sede, 'Tutte le sedi').replace('>—<', '>Sede non indicata<')}</select>` : ''}
       </div>
       ${sc ? '' : S.impostazioni.sedi.length && (sedi.length > 1 || sedi[0]) ? `<div class="avviso forte">Non hai indicato quale sede è il magazzino centrale (Impostazioni → Sedi): per ora la giacenza viene scalata dal fabbisogno di tutte le sedi.</div>` : ''}
-      <p class="muted legenda"><b>Fabbisogno</b> = piani × classi${f.sede ? ` (solo ${esc(f.sede === '—' ? 'sede non indicata' : f.sede)})` : ''} · <b>In magazzino</b> = giacenza del magazzino centrale · <b>Da ordinare</b> = ${sc ? `fabbisogno delle altre sedi + (fabbisogno di ${esc(sc)} − magazzino)` : 'fabbisogno − magazzino'}${chiuso ? '' : ', modificabile (in arancione se cambiata a mano)'}. Bottiglie e confezioni sono arrotondate per eccesso sede per sede.</p>
+      <p class="muted legenda"><b>Fabbisogno</b> = piani × classi${f.sede ? ` (solo ${esc(f.sede === '—' ? 'sede non indicata' : f.sede)})` : ''} · <b>In magazzino</b> = giacenza del magazzino centrale · <b>Da ordinare</b> = ${sc ? `fabbisogno delle altre sedi + (fabbisogno di ${esc(sc)} − magazzino)` : 'fabbisogno − magazzino'}${chiuso ? '' : ', modificabile (in arancione se cambiata a mano)'}. Bottiglie e confezioni sono arrotondate per eccesso sede per sede (→ quanto parte per la sede).</p>
       <div class="scroll-x ordwrap"><table class="t ord"><thead><tr><th>Prodotto</th><th class="n">Fabbisogno</th><th class="n">In magazzino</th><th class="n">${chiuso ? 'Ricevuto' : 'Da ordinare'}</th></tr></thead><tbody>${righeHtml()}</tbody></table></div>
       ${qbList.length ? `<div class="qb"><b>Da controllare (q.b., non calcolati):</b> ${qbList.map(q => `<span title="${esc(q.piani.join(', '))}">${esc(q.nome)}</span>`).join(', ')}</div>` : ''}
       ${chiuso ? '' : `<div class="extra"><input id="extraArt" list="dlArt" placeholder="+ aggiungi un prodotto fuori piano…" autocomplete="off"><input id="extraQ" inputmode="decimal" placeholder="qtà"><button class="btn sec sm" id="extraAdd">Aggiungi</button></div>
@@ -727,15 +727,16 @@
     const o = Core.byId(S.ordini, id);
     const righe = o.righe.filter(r => r.daOrdinare > 0);
     const sc = S.impostazioni.sedeCentrale;
-    openSheet(`<h3>Merce ricevuta</h3><p class="muted">Indica quanto è arrivato <b>al magazzino centrale${sc ? ' (' + esc(sc) + ')' : ''}</b>: verrà caricato in dispensa e l'ordine sarà chiuso.${sc ? ' La merce delle altre sedi non entra in dispensa: la proposta è già al netto della loro parte.' : ''}</p>
-      <table class="t"><tr><th>Prodotto</th><th class="n">In dispensa</th></tr>
-      ${righe.map(r => { const q = Core.quotaMagazzino(r); return `<tr><td>${esc(r.nome)}<div class="muted">ordinato ${fq(r.daOrdinare, r.unita)}${r.altre > 0 ? ` · di cui per le altre sedi ${fq(r.altre, r.unita)}` : ''}</div></td><td class="n"><span class="qin"><input class="q ${q > 0 ? '' : 'zero'}" data-r="${r.articoloId}" inputmode="decimal" value="${String(q).replace('.', ',')}"><span class="muted">${ul(r.unita)}</span></span></td></tr>`; }).join('')}</table>
+    const invio = r => Object.entries(r.invio || {}).filter(([, q]) => q > 0);
+    openSheet(`<h3>Merce ricevuta</h3><p class="muted">Indica quanto è arrivato <b>al magazzino centrale${sc ? ' (' + esc(sc) + ')' : ''}</b>: entra tutto in dispensa${sc ? ', poi viene scaricato quello che parte per le altre sedi' : ''}. L'ordine sarà chiuso.</p>
+      <table class="t"><tr><th>Prodotto</th><th class="n">Arrivato</th></tr>
+      ${righe.map(r => { const q = r.daOrdinare; return `<tr><td>${esc(r.nome)}<div class="muted">ordinato ${fq(r.daOrdinare, r.unita)}${invio(r).length ? ` · poi parte per ${invio(r).map(([s, x]) => `${esc(s)} ${fq(x, r.unita)}`).join(', ')} · resta in magazzino ${fq(Core.quotaMagazzino(r), r.unita)}` : ''}</div></td><td class="n"><span class="qin"><input class="q ${q > 0 ? '' : 'zero'}" data-r="${r.articoloId}" inputmode="decimal" value="${String(q).replace('.', ',')}"><span class="muted">${ul(r.unita)}</span></span></td></tr>`; }).join('')}</table>
       <div class="actions"><button class="btn ok" id="confRic">Conferma e carica</button><button class="btn sec" id="back">Indietro</button></div>`, true);
     $('#back').onclick = () => openOrdine(id);
     $('#confRic').onclick = () => {
       const q = {}; $$('[data-r]', sheet).forEach(i => q[i.dataset.r] = Core.num(i.value));
       for (const r of o.righe) if (!(r.articoloId in q)) q[r.articoloId] = 0;
-      Core.riceviOrdine(S, o.id, q); save(); closeSheet(); toast('Merce caricata in dispensa');
+      Core.riceviOrdine(S, o.id, q); save(); closeSheet(); toast(sc ? 'Merce caricata; scaricata la parte inviata alle sedi' : 'Merce caricata in dispensa');
     };
   }
 
@@ -770,7 +771,7 @@
       const per = new Map(); for (const r of rows) { const k = r.fornitore || 'Senza fornitore'; if (!per.has(k)) per.set(k, []); per.get(k).push(r); }
       const piani = o.voci.filter(v => (v.sede || '') === s).map(v => { const p = Core.byId(S.piani, v.pianoId); return p ? `${esc(p.nome)} × ${v.classi}` : ''; }).filter(Boolean).join('<br>');
       corpo += `<div class="${i ? 'pag' : ''}"><h1>Sede: ${esc(s || 'non indicata')}</h1><div class="sub">Settimana del ${Core.fmtData(o.settimana)}</div><div class="piani">${piani}</div>`;
-      for (const [forn, rr] of per) corpo += `<h2>${esc(forn)}</h2><table><tr><th>Prodotto</th><th class="n">Quantità</th><th>✓</th></tr>${rr.map(r => `<tr><td>${esc(r.nome)}</td><td class="n b">${fq(r.perSede[s], r.unita)}</td><td>☐</td></tr>`).join('')}</table>`;
+      for (const [forn, rr] of per) corpo += `<h2>${esc(forn)}</h2><table><tr><th>Prodotto</th><th class="n">Quantità</th><th>✓</th></tr>${rr.map(r => `<tr><td>${esc(r.nome)}</td><td class="n b">${fq((r.invio || {})[s] ?? r.perSede[s], r.unita)}</td><td>☐</td></tr>`).join('')}</table>`;
       corpo += '</div>';
     });
     finestraStampa('Distribuzione per sede ' + Core.fmtData(o.settimana), corpo);

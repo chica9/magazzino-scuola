@@ -455,17 +455,23 @@
     for (const [artId, e] of fb) {
       const art = byId(state.articoli, artId);
       const giac = art.giacenza;
-      // il magazzino serve solo la sede centrale (e le voci senza sede): le altre sedi si ordinano per intero
-      const { centrale, altre } = quoteSedi(state, e.perSede);
-      let suggerito = round3(altre + Math.max(0, centrale - Math.max(0, giac)));
-      if (isPezzi(art)) suggerito = ceilPezzi(suggerito);
-      const netto = suggerito; // quanto serve davvero, prima di arrotondare alla confezione
-      suggerito = arrotondaConfezione(art, suggerito);
+      // Tutto arriva al magazzino centrale, che poi smista alle altre sedi. La giacenza copre solo la sede centrale
+      // (e le voci senza sede); il resto si ordina per intero. Le confezioni si arrotondano sede per sede:
+      // ogni sede riceve confezioni intere (invio), la centrale arrotonda solo quello che manca in magazzino.
+      const { centrale, perAltre } = quoteSedi(state, e.perSede);
+      const invio = {};
+      for (const [s, q] of Object.entries(perAltre)) invio[s] = arrotondaConfezione(art, q);
+      let perMag = Math.max(0, round3(centrale - Math.max(0, giac)));
+      if (isPezzi(art)) perMag = ceilPezzi(perMag);
+      const altre = round3(Object.values(invio).reduce((x, y) => x + y, 0));
+      const netto = round3(Object.values(perAltre).reduce((x, y) => x + y, 0) + perMag); // quanto serve davvero
+      const suggerito = round3(altre + arrotondaConfezione(art, perMag));
       const p = prevBy.get(artId);
+      const manuale = !!(p && p.manuale && p.daOrdinare !== suggerito);
       righe.push({
         articoloId: artId, nome: art.nome, unita: art.unita, fornitore: art.fornitore, categoria: art.categoria,
-        fabbisogno: e.qta, perSede: e.perSede, centrale, altre, giacenza: giac, netto, suggerito,
-        daOrdinare: p && p.manuale ? p.daOrdinare : suggerito, manuale: !!(p && p.manuale),
+        fabbisogno: e.qta, perSede: e.perSede, centrale, altre, invio, giacenza: giac, netto, suggerito,
+        daOrdinare: manuale ? p.daOrdinare : suggerito, manuale,
         dettaglio: e.dettaglio, errori: e.errori,
       });
     }
@@ -479,10 +485,11 @@
    *  Senza sede centrale impostata tutto passa dal magazzino. */
   function quoteSedi(state, perSede) {
     const sc = state.impostazioni.sedeCentrale;
-    let centrale = 0, altre = 0;
-    for (const [s, q] of Object.entries(perSede || {})) { if (!sc || !s || s === sc) centrale += q; else altre += q; }
-    return { centrale: round3(centrale), altre: round3(altre) };
+    let centrale = 0; const perAltre = {};
+    for (const [s, q] of Object.entries(perSede || {})) { if (!sc || !s || s === sc) centrale += q; else perAltre[s] = round3((perAltre[s] || 0) + q); }
+    return { centrale: round3(centrale), altre: round3(Object.values(perAltre).reduce((x, y) => x + y, 0)), perAltre };
   }
+
   /** Unità minima d'acquisto espressa nell'unità di magazzino (0 se non indicata o non convertibile). */
   function multiploAcquisto(art) {
     const c = art && art.confezione;
@@ -566,10 +573,19 @@
     const ord = byId(state.ordini, id);
     if (!ord) throw new Error('Ordine non trovato');
     if (ord.stato === 'ricevuto') throw new Error('Ordine già ricevuto');
+    const nome = `Ordine ${ord.nome || fmtData(ord.settimana)}`;
     for (const r of ord.righe) {
-      const q = qtaRicevute && articoloIn(qtaRicevute, r.articoloId) ? num(qtaRicevute[r.articoloId]) : quotaMagazzino(r);
-      r.ricevuto = q;
-      if (q > 0 && byId(state.articoli, r.articoloId)) movimento(state, r.articoloId, q, 'carico', `Ordine ${ord.nome || fmtData(ord.settimana)}`, ord.id);
+      // tutto entra in dispensa al magazzino centrale, poi si scarica quello che parte per le altre sedi
+      const q = qtaRicevute && articoloIn(qtaRicevute, r.articoloId) ? num(qtaRicevute[r.articoloId]) : num(r.daOrdinare);
+      r.ricevuto = q; r.inviato = {};
+      if (!(q > 0) || !byId(state.articoli, r.articoloId)) continue;
+      movimento(state, r.articoloId, q, 'carico', nome, ord.id);
+      const invio = r.invio || (r.altre > 0 ? { 'altre sedi': r.altre } : {});
+      let resto = q;
+      for (const [s, qs] of Object.entries(invio)) {
+        const x = round3(Math.min(num(qs), resto));
+        if (x > 0) { movimento(state, r.articoloId, -x, 'scarico', `${nome}: inviato a ${s}`, ord.id); r.inviato[s] = x; resto = round3(resto - x); }
+      }
     }
     ord.stato = 'ricevuto'; ord.dataRicezione = today();
     touch(ord); state.updatedAt = now();
