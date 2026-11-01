@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+*.log
+# dati della scuola: mai nel repo pubblico
+privato/
+*.docx
+*.doc
+*.pdf
+*.xlsx
