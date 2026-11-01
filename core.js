@@ -236,10 +236,11 @@
     if (typeof out.impostazioni.sedeCentrale !== 'string') out.impostazioni.sedeCentrale = '';
     if (!out.impostazioni.sezioni || typeof out.impostazioni.sezioni !== 'object') out.impostazioni.sezioni = {};
     for (const a of out.articoli) { if (!Array.isArray(a.alias)) a.alias = []; if (a.pezzo === undefined) a.pezzo = null; }
-    // «Carne e pesce» (fino alla 2.1) diventa «Carne» e «Pesce»
+    // «Carne e pesce» (fino alla 2.1) diventa «Carne» e «Pesce». Senza toccare u: merge migra entrambe le parti,
+    // e una copia vecchia rimasta su un dispositivo non deve passare davanti alle modifiche più recenti.
     const cats = out.impostazioni.categorie, ic = cats.indexOf('Carne e pesce');
-    if (ic >= 0) { cats.splice(ic, 1, ...['Carne', 'Pesce'].filter(c => !cats.includes(c))); out.impostazioni.u = now(); }
-    for (const a of out.articoli) if (a.categoria === 'Carne e pesce') { a.categoria = PESCE_RE.test(normNome(a.nome)) ? 'Pesce' : 'Carne'; touch(a); }
+    if (ic >= 0) cats.splice(ic, 1, ...['Carne', 'Pesce'].filter(c => !cats.includes(c)));
+    for (const a of out.articoli) if (a.categoria === 'Carne e pesce') a.categoria = PESCE_RE.test(normNome(a.nome)) ? 'Pesce' : 'Carne';
     for (const p of out.piani) { if (!Array.isArray(p.qb)) p.qb = []; for (const k of ['classe', 'materia', 'lezione', 'file']) if (p[k] == null) p[k] = ''; }
     for (const o of out.ordini) for (const v of o.voci || []) if (v.sede == null) v.sede = '';
     out.version = VERSION;

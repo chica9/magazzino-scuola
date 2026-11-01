@@ -336,7 +336,10 @@ test('«Carne e pesce» diventa «Carne» e «Pesce»', () => {
   const s = C.migrate(vecchio);
   assert.deepStrictEqual(s.impostazioni.categorie, ['Frutta e verdura', 'Carne', 'Pesce', 'Altro']);
   assert.deepStrictEqual(s.articoli.map(a => a.categoria), ['Carne', 'Pesce']);
-  assert.ok(s.articoli[0].u > '2026-01-01');                                     // toccati: il cambio si sincronizza
+  assert.strictEqual(s.articoli[0].u, '2026-01-01');                             // non toccati: non scavalcano modifiche più recenti
+  const recente = { ...vecchio.articoli[1], categoria: 'Pesce', fornitore: 'Santopadre', u: '2026-02-01' };
+  const m = C.merge({ ...vecchio, articoli: [vecchio.articoli[1]] }, { impostazioni: vecchio.impostazioni, articoli: [recente] });
+  assert.strictEqual(m.articoli[0].fornitore, 'Santopadre');
   assert.strictEqual(C.indovinaCategoria('Cipolla rossa'), 'Frutta e verdura');  // «rossa» non è «ossa»
 });
 
