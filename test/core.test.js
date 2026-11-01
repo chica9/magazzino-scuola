@@ -381,6 +381,27 @@ test('unità minima d\'acquisto: l\'ordine arrotonda ai multipli', () => {
   assert.strictEqual(an.voci[0].scorta, '2');
 });
 
+test('unità minima d\'invio: si compra a cartoni, si manda a litri', () => {
+  const s = C.emptyState();
+  s.impostazioni.sedi = ['Giarre', 'Maniace', 'Riposto']; s.impostazioni.sedeCentrale = 'Giarre';
+  const latte = C.addArticolo(s, { nome: 'Latte', unita: 'l', giacenza: 1, confezione: { qta: 12, unita: 'l' }, invio: { qta: 1, unita: 'l' } });
+  const p = C.addPiano(s, { nome: 'P', righe: [{ articoloId: latte.id, qta: 2.4, unita: 'l' }] });
+  const o = C.addOrdine(s, { voci: [{ pianoId: p.id, classi: 1, sede: 'Giarre' }, { pianoId: p.id, classi: 1, sede: 'Maniace' }, { pianoId: p.id, classi: 2, sede: 'Riposto' }] });
+  const r = o.righe[0];
+  assert.deepStrictEqual(r.invio, { Maniace: 3, Riposto: 5 });              // 2,4 → 3 l; 4,8 → 5 l
+  assert.strictEqual(r.netto, 8.6);                                          // 2,4 + 4,8 + (2,4 − 1)
+  assert.strictEqual(r.daOrdinare, 12);                                      // 3 + 5 + 1,4 = 9,4 → 1 cartone
+  assert.strictEqual(C.quotaMagazzino(r), 4);                                // resta a Giarre: 12 − 8
+  assert.strictEqual(C.confezioniDi(latte, 12), '1 × 12 l');
+  // senza unità d'invio si mandano confezioni intere
+  C.updateArticolo(s, latte.id, { invio: null });
+  assert.deepStrictEqual(C.righeOrdine(s, o.voci)[0].invio, { Maniace: 12, Riposto: 12 });
+  // import: colonne «Confezione» e «Unità minima d'invio»
+  const doc = { nomeFile: 'p.xlsx', testo: [], tabelle: [[['Nome', 'U.M.', 'Unità minima d\'acquisto', 'Unità minima d\'invio'], ['Latte intero', 'l', '12 l', '1 l']]] };
+  const v = I.analizzaArticoli(s, doc).voci[0];
+  assert.deepStrictEqual([v.unita, v.confezione, v.invio], ['l', { qta: 12, unita: 'l' }, { qta: 1, unita: 'l' }]);
+});
+
 test('sincronizzazione: conflitti da scegliere (una versione o l\'unione)', () => {
   const clone = x => JSON.parse(JSON.stringify(x));
   const piu = (st, id, ms) => { const a = st.articoli.find(x => x.id === id); a.u = new Date(Date.parse(a.u) + ms).toISOString(); };
@@ -451,7 +472,7 @@ test('sincronizzazione: «Da ordinare» cambiato a mano su due dispositivi', () 
   C.setDaOrdinare(x, o.id, f.id, 5);                                   // un dispositivo cambia la farina
   C.setDaOrdinare(y, o.id, z.id, 3);                                   // l'altro lo zucchero
   const m = C.merge(x, y, s), c = C.conflittiAperti(m)[0];
-  assert.deepStrictEqual(C.campiDiversi(c).map(k => [k.campo, k.sugg]).sort(), [['riga:' + f.id, 'a'], ['riga:' + z.id, 'b']]);
+  assert.deepStrictEqual(Object.fromEntries(C.campiDiversi(c).map(k => [k.campo, k.sugg])), { ['riga:' + f.id]: 'a', ['riga:' + z.id]: 'b' });
   C.risolviConflitto(m, c.id, 'm');                                    // unione: tutte e due
   const r = id => m.ordini[0].righe.find(k => k.articoloId === id).daOrdinare;
   assert.deepStrictEqual([r(f.id), r(z.id)], [5, 3]);

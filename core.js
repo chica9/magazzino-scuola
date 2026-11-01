@@ -236,7 +236,7 @@
     for (const k of ['categorie', 'fornitori', 'sedi']) if (!Array.isArray(out.impostazioni[k])) out.impostazioni[k] = k === 'categorie' ? CATEGORIE_DEFAULT.slice() : [];
     if (typeof out.impostazioni.sedeCentrale !== 'string') out.impostazioni.sedeCentrale = '';
     if (!out.impostazioni.sezioni || typeof out.impostazioni.sezioni !== 'object') out.impostazioni.sezioni = {};
-    for (const a of out.articoli) { if (!Array.isArray(a.alias)) a.alias = []; if (a.pezzo === undefined) a.pezzo = null; if (a.confezione === undefined) a.confezione = null; }
+    for (const a of out.articoli) { if (!Array.isArray(a.alias)) a.alias = []; if (a.pezzo === undefined) a.pezzo = null; if (a.confezione === undefined) a.confezione = null; if (a.invio === undefined) a.invio = null; }
     // «Carne e pesce» (fino alla 2.1) diventa «Carne» e «Pesce». Senza toccare u: merge migra entrambe le parti,
     // e una copia vecchia rimasta su un dispositivo non deve passare davanti alle modifiche più recenti.
     const cats = out.impostazioni.categorie, ic = cats.indexOf('Carne e pesce');
@@ -288,7 +288,7 @@
     const art = touch({
       id: a.id || newId(), nome: capitalizzaSeVuoto(a.nome), categoria: a.categoria || indovinaCategoria(a.nome) || 'Altro',
       unita: normUnit(a.unita), giacenza: num(a.giacenza), scortaMinima: num(a.scortaMinima),
-      fornitore: a.fornitore || '', note: a.note || '', sotto: a.sotto || '', pezzo: pulisciPezzo(a.pezzo), confezione: pulisciPezzo(a.confezione), alias: (a.alias || []).map(normNome).filter(Boolean),
+      fornitore: a.fornitore || '', note: a.note || '', sotto: a.sotto || '', pezzo: pulisciPezzo(a.pezzo), confezione: pulisciPezzo(a.confezione), invio: pulisciPezzo(a.invio), alias: (a.alias || []).map(normNome).filter(Boolean),
     });
     if (!art.nome) throw new Error('Nome articolo obbligatorio');
     state.articoli.push(art);
@@ -307,6 +307,7 @@
     if ('scortaMinima' in patch) patch.scortaMinima = num(patch.scortaMinima);
     if ('pezzo' in patch) patch.pezzo = pulisciPezzo(patch.pezzo);
     if ('confezione' in patch) patch.confezione = pulisciPezzo(patch.confezione);
+    if ('invio' in patch) patch.invio = pulisciPezzo(patch.invio);
     if ('nome' in patch) patch.nome = capitalizzaSeVuoto(patch.nome);
     Object.assign(art, patch); touch(art); state.updatedAt = now();
     if (art.fornitore) aggiungiVoce(state, 'fornitori', art.fornitore);
@@ -465,16 +466,16 @@
       const art = byId(state.articoli, artId);
       const giac = art.giacenza;
       // Tutto arriva al magazzino centrale, che poi smista alle altre sedi. La giacenza copre solo la sede centrale
-      // (e le voci senza sede); il resto si ordina per intero. Le confezioni si arrotondano sede per sede:
-      // ogni sede riceve confezioni intere (invio), la centrale arrotonda solo quello che manca in magazzino.
+      // (e le voci senza sede); il resto si ordina per intero. Ogni altra sede riceve multipli dell'unità d'invio;
+      // il totale (invii + quanto manca alla centrale) si arrotonda all'unità d'acquisto: l'avanzo resta in magazzino.
       const { centrale, perAltre } = quoteSedi(state, e.perSede);
       const invio = {};
-      for (const [s, q] of Object.entries(perAltre)) invio[s] = arrotondaConfezione(art, q);
+      for (const [s, q] of Object.entries(perAltre)) invio[s] = arrotondaInvio(art, q);
       let perMag = Math.max(0, round3(centrale - Math.max(0, giac)));
       if (isPezzi(art)) perMag = ceilPezzi(perMag);
       const altre = round3(Object.values(invio).reduce((x, y) => x + y, 0));
       const netto = round3(Object.values(perAltre).reduce((x, y) => x + y, 0) + perMag); // quanto serve davvero
-      const suggerito = round3(altre + arrotondaConfezione(art, perMag));
+      const suggerito = arrotondaConfezione(art, round3(altre + perMag));
       const p = prevBy.get(artId);
       const manuale = !!(p && p.manuale && p.daOrdinare !== suggerito);
       righe.push({
@@ -506,11 +507,18 @@
     const m = convert(num(c.qta), c.unita, art.unita, art.pezzo);
     return m > 0 ? round3(m) : 0;
   }
-  /** Arrotonda per eccesso al multiplo dell'unità minima d'acquisto. */
-  function arrotondaConfezione(art, q) {
-    const m = multiploAcquisto(art);
-    return m && q > 0 ? round3(Math.ceil(q / m - 1e-9) * m) : q;
+  /** Unità minima d'invio alle sedi nell'unità di magazzino (es. latte: si compra a cartoni da 12 l, si manda a litri).
+   *  Se non indicata si mandano confezioni d'acquisto intere. */
+  function multiploInvio(art) {
+    const c = art && art.invio;
+    const m = c ? convert(num(c.qta), c.unita, art.unita, art.pezzo) : 0;
+    return m > 0 ? round3(m) : multiploAcquisto(art);
   }
+  const arrotonda = (m, q) => (m && q > 0 ? round3(Math.ceil(q / m - 1e-9) * m) : q);
+  /** Arrotonda per eccesso al multiplo dell'unità minima d'acquisto. */
+  function arrotondaConfezione(art, q) { return arrotonda(multiploAcquisto(art), q); }
+  /** Arrotonda per eccesso al multiplo dell'unità minima d'invio. */
+  function arrotondaInvio(art, q) { return arrotonda(multiploInvio(art), q); }
   /** «2 × 5 kg» se la quantità è un multiplo esatto della confezione, altrimenti ''. */
   function confezioniDi(art, q) {
     const m = multiploAcquisto(art);
@@ -680,8 +688,8 @@
     return rows.filter(r => r.some(c => c.trim()));
   }
   function esportaArticoliCSV(state) {
-    const rows = [['Nome', 'Categoria', 'Unità', 'Giacenza', 'Scorta minima', 'Confezione', 'Fornitore', 'Note']];
-    for (const a of live(state.articoli)) rows.push([a.nome, a.categoria, a.unita, dec(a.giacenza), dec(a.scortaMinima), a.confezione ? dec(a.confezione.qta) + ' ' + a.confezione.unita : '', a.fornitore, a.note]);
+    const rows = [['Nome', 'Categoria', 'Unità', 'Giacenza', 'Scorta minima', 'Confezione', 'Invio minimo', 'Fornitore', 'Note']];
+    for (const a of live(state.articoli)) rows.push([a.nome, a.categoria, a.unita, dec(a.giacenza), dec(a.scortaMinima), a.confezione ? dec(a.confezione.qta) + ' ' + a.confezione.unita : '', a.invio ? dec(a.invio.qta) + ' ' + a.invio.unita : '', a.fornitore, a.note]);
     return toCSV(rows);
   }
 
@@ -862,7 +870,7 @@
     newId, emptyState, migrate, byId, live, num, round3, aggiungiVoce, rimuoviVoce, trovaFornitore,
     addArticolo, updateArticolo, deleteArticolo, aggiungiAlias, trovaArticolo, movimento, sottoScorta,
     addPiano, updatePiano, deletePiano, fabbisogno, scaricaPiano,
-    righeOrdine, quoteSedi, quotaMagazzino, multiploAcquisto, arrotondaConfezione, confezioniDi, qbOrdine, addOrdine, updateOrdine, ricalcolaOrdine, setDaOrdinare, addRigaExtra, deleteOrdine, riceviOrdine,
+    righeOrdine, quoteSedi, quotaMagazzino, multiploAcquisto, multiploInvio, arrotondaConfezione, arrotondaInvio, confezioniDi, qbOrdine, addOrdine, updateOrdine, ricalcolaOrdine, setDaOrdinare, addRigaExtra, deleteOrdine, riceviOrdine,
     sediOrdine, testoOrdine, csvOrdine,
     lunediProssimo, lunediDi, fmtData, annoScolastico, toCSV, parseCSV, esportaArticoliCSV, merge, compatta, riepilogo,
     setDispositivo, risolviConflitto, conflittiAperti, campiDiversi };

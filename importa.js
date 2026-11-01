@@ -209,8 +209,9 @@
   const COLONNE = {
     nome: /^(nome|descrizione|prodotto|articolo|denominazione|voce)/, categoria: /^(categoria|reparto|tipolog|famiglia|gruppo)/,
     unita: /^(u\.?\s*m|unit(?!.*(minim|acquist))|misura)/, giacenza: /^(giacenz|esistenz|disponib|scorta attuale|in magazzino)/,
-    scorta: /^(scorta min|minimo(?!.*acquist)|min\b(?!.*acquist)|sottoscorta)/,
-    confezione: /^(conf|formato|pezzatura|multipl|lotto|unit.*(minim|acquist)|minim.*acquist|q\.?\s*t[aà] minima)/, fornitore: /^(fornitor|ditta|azienda|grossista)/, note: /^(note|osserv)/,
+    scorta: /^(scorta min|minimo(?!.*(acquist|invi))|min\b(?!.*(acquist|invi))|sottoscorta)/,
+    confezione: /^(conf|formato|pezzatura|multipl|lotto|unit(?!.*invi).*(minim|acquist)|minim(?!.*invi).*acquist|q\.?\s*t[aà] minima(?!.*invi))/,
+    invio: /^(invio|spedizion|unit.*invi|minim.*invi|q\.?\s*t[aà] minima.*invi)/, fornitore: /^(fornitor|ditta|azienda|grossista)/, note: /^(note|osserv)/,
   };
   function intestazioneArticoli(row) {
     const h = row.map(c => t(c).toLowerCase());
@@ -237,7 +238,7 @@
         for (const r of tab.slice(h + 1)) {
           const nome = g(r, ci.nome); if (!nome) continue;
           voci.push({ nome, umOrig: g(r, ci.unita), categoria: g(r, ci.categoria), fornitore: g(r, ci.fornitore),
-            giacenza: g(r, ci.giacenza), scorta: g(r, ci.scorta), note: g(r, ci.note), confOrig: g(r, ci.confezione), sezione: null });
+            giacenza: g(r, ci.giacenza), scorta: g(r, ci.scorta), note: g(r, ci.note), confOrig: g(r, ci.confezione), invioOrig: g(r, ci.invio), sezione: null });
         }
         continue;
       }
@@ -268,6 +269,7 @@
       v.unita = Core.unitaMagazzino(pu, v.nome);
       if (v.umOrig && !pu) v.avviso = `Unità "${v.umOrig}" non riconosciuta`;
       v.confezione = leggiConfezione(v.confOrig, v.unita);
+      v.invio = leggiConfezione(v.invioOrig, v.unita);
       const sezione = v.sezione ? sezioni.get(v.sezione) : null;
       v.fornitore = v.fornitore ? (Core.trovaFornitore(state, v.fornitore) || t(v.fornitore)) : '';
       v.categoria = v.categoria || Core.indovinaCategoria(v.nome) || (sezione ? Core.indovinaCategoria(sezione.nome) : '') || 'Altro';
@@ -311,11 +313,12 @@
         if (v.scorta !== '' && v.scorta != null) patch.scortaMinima = v.scorta;
         if (v.note) patch.note = v.note;
         if (v.confezione) patch.confezione = v.confezione;
+        if (v.invio) patch.invio = v.invio;
         Core.updateArticolo(state, v.articoloId, patch);
         if (v.giacenza !== '' && v.giacenza != null) Core.movimento(state, v.articoloId, Core.num(v.giacenza), 'rettifica', 'Importato da ' + an.nomeFile);
         aggiornati++;
       } else {
-        Core.addArticolo(state, { nome: v.nome, unita: v.unita, categoria: v.categoria, fornitore, giacenza: v.giacenza, scortaMinima: v.scorta, note: v.note, confezione: v.confezione,
+        Core.addArticolo(state, { nome: v.nome, unita: v.unita, categoria: v.categoria, fornitore, giacenza: v.giacenza, scortaMinima: v.scorta, note: v.note, confezione: v.confezione, invio: v.invio,
           alias: v.nomeOrig !== v.nome ? [v.nomeOrig] : [] });
         inseriti++;
       }

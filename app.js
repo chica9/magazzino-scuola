@@ -1,7 +1,7 @@
 /* app.js — interfaccia del Magazzino scolastico. Logica in core.js, import in importa.js/leggi.js, sync in github.js. */
 (function () {
   'use strict';
-  const APP_VERSION = '2.6.0';
+  const APP_VERSION = '2.7.0';
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -182,7 +182,7 @@
       const low = a.scortaMinima > 0 && a.giacenza < a.scortaMinima;
       return `<div class="item ${low ? 'low' : ''}" data-art="${a.id}">
           <div class="grow"><div class="title">${esc(a.nome)}</div>
-          <div class="muted">${conCat ? esc(Core.gruppoCategoria(a)) + ' · ' : ''}${a.fornitore ? esc(a.fornitore) : '<i>nessun fornitore</i>'}${a.scortaMinima ? ' · min ' + fq(a.scortaMinima, a.unita) : ''}${a.confezione ? ' · conf. ' + fq(a.confezione.qta, a.confezione.unita) : ''}</div></div>
+          <div class="muted">${conCat ? esc(Core.gruppoCategoria(a)) + ' · ' : ''}${a.fornitore ? esc(a.fornitore) : '<i>nessun fornitore</i>'}${a.scortaMinima ? ' · min ' + fq(a.scortaMinima, a.unita) : ''}${a.confezione ? ' · conf. ' + fq(a.confezione.qta, a.confezione.unita) : ''}${a.invio ? ' · invio ' + fq(a.invio.qta, a.invio.unita) : ''}</div></div>
           <div class="qty">${fq(a.giacenza, a.unita)}${low ? '<small>sotto scorta</small>' : ''}</div>
           <button class="btn sec icon" data-mov="${a.id}" title="Carico / scarico / inventario" aria-label="Carico o scarico">±</button>
         </div>`;
@@ -214,7 +214,9 @@
           <label class="f">Scorta minima<input name="scortaMinima" inputmode="decimal" value="${a?.scortaMinima || ''}" placeholder="avviso sotto…"></label>
         </div>
         <div class="f">Unità minima d'acquisto <span class="muted">(facoltativa: l'ordine arrotonda a multipli di questa)</span>
-          <div class="row"><input name="cq" inputmode="decimal" value="${v.confezione ? String(v.confezione.qta).replace('.', ',') : ''}" placeholder="es. 5" style="width:90px"> <select name="cu">${unitOpts(v.confezione ? v.confezione.unita : v.unita)}</select></div></div>
+          <div class="row"><input name="cq" inputmode="decimal" value="${v.confezione ? String(v.confezione.qta).replace('.', ',') : ''}" placeholder="es. 12" style="width:90px"> <select name="cu">${unitOpts(v.confezione ? v.confezione.unita : v.unita)}</select></div></div>
+        <div class="f">Unità minima d'invio alle sedi <span class="muted">(facoltativa: se vuota si mandano confezioni d'acquisto intere; es. latte: si compra a cartoni da 12 l, si manda a 1 l)</span>
+          <div class="row"><input name="iq" inputmode="decimal" value="${v.invio ? String(v.invio.qta).replace('.', ',') : ''}" placeholder="es. 1" style="width:90px"> <select name="iu">${unitOpts(v.invio ? v.invio.unita : v.unita)}</select></div></div>
         <label class="f">Fornitore<select name="fornitore">${opts([...new Set([...S.impostazioni.fornitori, v.fornitore].filter(Boolean))], v.fornitore, '— nessuno —')}</select></label>
         <fieldset class="conv"><legend>Conversione pezzi ↔ peso/volume <span class="muted">(facoltativa)</span></legend>
           <div class="muted">Serve quando nei piani il prodotto è scritto in modo diverso dal magazzino: es. limoni «n. 3» ma in magazzino a kg, oppure liquore «10 cl» ma in magazzino a bottiglie.</div>
@@ -233,16 +235,20 @@
       if (confezione && !Core.multiploAcquisto({ unita: d.unita, pezzo: pezzo && { qta: Core.num(pezzo.qta), unita: pezzo.unita }, confezione: { qta: Core.num(confezione.qta), unita: confezione.unita } })) {
         toast(`Non so convertire ${d.cq} ${Core.UNITS[d.cu].label} in ${Core.UNITS[d.unita].label}: compila la conversione pezzi ↔ peso/volume`); return;
       }
+      const invio = Core.num(d.iq) > 0 ? { qta: d.iq, unita: d.iu } : null;
+      if (invio && !Core.multiploAcquisto({ unita: d.unita, pezzo: pezzo && { qta: Core.num(pezzo.qta), unita: pezzo.unita }, confezione: { qta: Core.num(invio.qta), unita: invio.unita } })) {
+        toast(`Non so convertire ${d.iq} ${Core.UNITS[d.iu].label} in ${Core.UNITS[d.unita].label}: compila la conversione pezzi ↔ peso/volume`); return;
+      }
       const dup = artDaNome(d.nome);
       if (dup && dup.id !== a?.id && !confirm(`Esiste già "${dup.nome}". Salvare comunque un secondo prodotto con lo stesso nome?`)) return;
       try {
         let art;
         if (a) {
           const g = Core.num(d.giacenza);
-          Core.updateArticolo(S, a.id, { nome: d.nome, categoria: d.categoria, sotto: d.sotto || '', unita: d.unita, scortaMinima: d.scortaMinima, fornitore: d.fornitore, note: d.note, pezzo, confezione });
+          Core.updateArticolo(S, a.id, { nome: d.nome, categoria: d.categoria, sotto: d.sotto || '', unita: d.unita, scortaMinima: d.scortaMinima, fornitore: d.fornitore, note: d.note, pezzo, confezione, invio });
           if (g !== a.giacenza) Core.movimento(S, a.id, g, 'rettifica', 'Modifica manuale');
           art = a;
-        } else art = Core.addArticolo(S, { ...d, pezzo, confezione });
+        } else art = Core.addArticolo(S, { ...d, pezzo, confezione, invio });
         save(); closeSheet(); toast(a ? 'Prodotto aggiornato' : 'Prodotto aggiunto');
         if (preset && preset.onCreate) preset.onCreate(art);
       } catch (err) { toast(err.message); }
@@ -515,7 +521,7 @@
       const fs = Importa.fornitoreVoce(an, v);
       return `<tr class="${v.azione === 'salta' ? 'off' : ''}" data-i="${i}">
         <td><input type="checkbox" class="ia-ok" ${v.azione !== 'salta' ? 'checked' : ''} aria-label="Importa"></td>
-        <td><input class="ia-nome" value="${esc(v.nome)}">${v.avviso ? `<div class="warn small">${esc(v.avviso)}</div>` : ''}${v.simile ? `<div class="muted small">Simile a «${esc(v.simile)}» già in dispensa</div>` : ''}${v.confezione ? `<div class="muted small">Confezione: ${fq(v.confezione.qta, v.confezione.unita)}</div>` : ''}</td>
+        <td><input class="ia-nome" value="${esc(v.nome)}">${v.avviso ? `<div class="warn small">${esc(v.avviso)}</div>` : ''}${v.simile ? `<div class="muted small">Simile a «${esc(v.simile)}» già in dispensa</div>` : ''}${v.confezione ? `<div class="muted small">Confezione: ${fq(v.confezione.qta, v.confezione.unita)}${v.invio ? ' · invio: ' + fq(v.invio.qta, v.invio.unita) : ''}</div>` : ''}</td>
         <td><select class="ia-u">${unitOpts(v.unita)}</select></td>
         <td><select class="ia-cat">${opts(cats(), v.categoria)}</select></td>
         <td><select class="ia-forn">${opts([...new Set([...S.impostazioni.fornitori, fs].filter(Boolean))], v.fornitore, v.sezione ? `(dalla sezione: ${an.sezioni.find(s => s.nome === v.sezione)?.fornitore || 'nessuno'})` : '— nessuno —')}</select></td>
@@ -673,7 +679,7 @@
         const tip = r.dettaglio.map(d => `${d.nome} × ${d.classi}${d.sede ? ' (' + d.sede + ')' : ''}: ${fq(d.qta, r.unita)}`).join('\n');
         const fabb = f.sede ? (r.perSede || {})[sedeKey] || 0 : r.fabbisogno;
         const cf = art ? Core.confezioniDi(art, r.daOrdinare) : '';
-        const conf = art && art.confezione ? `<div class="persede conf"><span>Confezione da ${fq(art.confezione.qta, art.confezione.unita)}${cf ? ' → <b>' + esc(cf.split(' × ')[0]) + ' conf.</b>' : r.daOrdinare > 0 ? ' · <span class="warn">non è un multiplo</span>' : ''}</span>${r.netto != null && r.suggerito > r.netto ? `<span>ne servono ${fq(r.netto, r.unita)}</span>` : ''}</div>` : '';
+        const conf = art && art.confezione ? `<div class="persede conf"><span>Confezione da ${fq(art.confezione.qta, art.confezione.unita)}${cf ? ' → <b>' + esc(cf.split(' × ')[0]) + ' conf.</b>' : r.daOrdinare > 0 ? ' · <span class="warn">non è un multiplo</span>' : ''}</span>${art.invio ? `<span>invio alle sedi a ${fq(art.invio.qta, art.invio.unita)}</span>` : ''}${r.netto != null && r.suggerito > r.netto ? `<span>ne servono ${fq(r.netto, r.unita)}</span>` : ''}</div>` : '';
         h += `<tr><td title="${esc(tip)}"><div class="nome">${esc(r.nome)}${r.extra ? ' <span class="tag">extra</span>' : ''}${r.errori.length ? ` <span class="tag warn" title="${esc(r.errori.join('\n'))}">conversione mancante</span>` : ''}</div>${conf}${ui.odVista !== 'forn' && !f.forn ? `<div class="persede"><span>${esc(r.fornitore || 'senza fornitore')}</span></div>` : ''}${f.sede ? '' : perSede}</td>
           <td class="n" data-l="Fabbisogno${f.sede ? ' ' + esc(f.sede === '—' ? '' : f.sede) : ''}">${fq(fabb, r.unita)}</td>
           <td class="n ${giac > 0 ? '' : 'muted'}" data-l="In magazzino">${fq(giac, r.unita)}</td>
@@ -812,14 +818,14 @@
 
   // ---------- Conflitti di sincronizzazione ----------
   const CAMPI = { nome: 'Nome', categoria: 'Categoria', unita: 'Unità', fornitore: 'Fornitore', scortaMinima: 'Scorta minima', note: 'Note',
-    pezzo: 'Conversione pezzo', confezione: "Unità minima d'acquisto", sotto: 'Frutta o verdura', classe: 'Classe', materia: 'Materia',
+    pezzo: 'Conversione pezzo', confezione: "Unità minima d'acquisto", invio: "Unità minima d'invio", sotto: 'Frutta o verdura', classe: 'Classe', materia: 'Materia',
     lezione: 'Lezione', righe: 'Ingredienti', qb: 'Ingredienti q.b.', descrizione: 'Descrizione', settimana: 'Settimana', stato: 'Stato',
     voci: 'Piani della settimana', sedeCentrale: 'Sede del magazzino centrale', del: 'Eliminato' };
   const TIPI = { articoli: 'Prodotto', piani: 'Piano di lavoro', ordini: 'Ordine', impostazioni: 'Impostazioni' };
   function valoreConflitto(campo, v) {
     if (campo === 'del') return v ? '<b>eliminato</b>' : 'presente';
     if (v == null || v === '' || (Array.isArray(v) && !v.length)) return campo.startsWith('riga:') ? '<i>calcolata dai piani</i>' : '<i>vuoto</i>';
-    if (campo === 'pezzo' || campo === 'confezione') return fq(v.qta, v.unita);
+    if (campo === 'pezzo' || campo === 'confezione' || campo === 'invio') return fq(v.qta, v.unita);
     if (campo === 'unita') return esc(ul(v));
     if (campo === 'settimana') return Core.fmtData(v);
     if (campo === 'voci') return v.map(x => { const p = S.piani.find(y => y.id === x.pianoId); return esc((p && p.nome) || '?') + ' × ' + x.classi + (x.sede ? ' (' + esc(x.sede) + ')' : ''); }).join('<br>');
