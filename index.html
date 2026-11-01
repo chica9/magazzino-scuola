@@ -181,6 +181,12 @@ details.voci summary{cursor:pointer;font-weight:600;font-size:14px}
 .file{font-size:13px;color:var(--muted);margin-bottom:8px;word-break:break-all}
 .avviso{background:var(--soft);border-radius:10px;padding:9px 12px;margin:8px 0;font-size:14px}
 .avviso.forte{background:var(--accent-soft);border:1px solid var(--accent)}
+.avviso.conflitti{display:block;width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer}
+.conflitto{padding:12px 14px;margin:10px 0}
+.scelte{display:grid;gap:8px;margin-top:8px}
+.scelta{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer}
+.scelta:has(input:checked){border-color:var(--brand);background:var(--brand-soft)}
+.scelta input{margin-top:3px;accent-color:var(--brand)}
 .rv-bar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;font-size:14px}
 .rv-bar b.warn{color:var(--accent)}
 .chk{display:inline-flex;align-items:center;gap:6px;font-size:14px}

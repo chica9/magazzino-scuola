@@ -1,7 +1,7 @@
 /* app.js — interfaccia del Magazzino scolastico. Logica in core.js, import in importa.js/leggi.js, sync in github.js. */
 (function () {
   'use strict';
-  const APP_VERSION = '2.4.1';
+  const APP_VERSION = '2.5.0';
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -26,13 +26,26 @@
     return Core.emptyState();
   }
   function save(opts = {}) {
-    localStorage.setItem('mag.state', JSON.stringify(S));
-    localStorage.setItem('mag.dirty', String(Date.now()));
+    try { localStorage.setItem('mag.state', JSON.stringify(S)); }
+    catch (e) { toast('Memoria del dispositivo piena: la modifica non è salvata qui. Sincronizza subito per non perderla.'); console.error(e); }
+    try { localStorage.setItem('mag.dirty', String(Date.now())); } catch (e) { /* vedi sopra */ }
     if (!opts.silent) render(); else { aggiornaDatalist(); setSyncUI(); }
     scheduleSync();
   }
 
   // ---------- Sync ----------
+  // nome di questo dispositivo, scritto sulle modifiche: nei conflitti si vede chi ha cambiato cosa
+  function nomeDispositivo() {
+    try { const n = localStorage.getItem('mag.device'); if (n) return n; } catch (e) { /* */ }
+    const ua = navigator.userAgent;
+    const tipo = /iPad|Tablet/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua)) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'Tablet'
+      : /Mobi|iPhone|Android/i.test(ua) ? 'Telefono' : 'Computer';
+    const so = /iPhone|iPad|Macintosh/.test(ua) ? (tipo === 'Computer' ? 'Mac' : 'Apple') : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : '';
+    return (tipo + ' ' + so).trim();
+  }
+  Core.setDispositivo(nomeDispositivo());
+  function leggiBase() { try { const b = localStorage.getItem('mag.base'); return b ? JSON.parse(b) : null; } catch (e) { return null; } }
+  function salvaBase(b) { try { localStorage.setItem('mag.base', JSON.stringify(b)); } catch (e) { localStorage.removeItem('mag.base'); } }
   let syncTimer = null, syncing = false, syncErr = '';
   function scheduleSync() {
     if (!Sync.loggedIn() || !navigator.onLine) return;
@@ -45,15 +58,19 @@
     if (!navigator.onLine) { setSyncUI(); if (interactive) toast('Sei offline: i dati restano salvati su questo dispositivo'); return; }
     syncing = true; setSyncUI();
     const dirtyPrima = localStorage.getItem('mag.dirty');
+    const prima = JSON.parse(JSON.stringify(S)), apertiPrima = Core.conflittiAperti(S).length;
     try {
-      const merged = await Sync.sync(S);
-      // eventuali modifiche fatte mentre il sync era in corso non vanno perse
-      S = localStorage.getItem('mag.dirty') === dirtyPrima ? merged : Core.merge(S, merged);
+      const merged = await Sync.sync(prima, leggiBase());
+      salvaBase(merged); // da qui in poi le modifiche si confrontano con questa versione
+      // eventuali modifiche fatte mentre il sync era in corso non vanno perse (base: lo stato da cui è partito il sync)
+      S = localStorage.getItem('mag.dirty') === dirtyPrima ? merged : Core.merge(S, merged, prima);
       localStorage.setItem('mag.state', JSON.stringify(S));
       if (localStorage.getItem('mag.dirty') === dirtyPrima) localStorage.removeItem('mag.dirty'); else scheduleSync();
       syncErr = '';
       if (!overlay.classList.contains('open')) render();
-      if (interactive) toast('Sincronizzato');
+      const aperti = Core.conflittiAperti(S).length;
+      if (aperti > apertiPrima) toast(`${aperti} ${aperti === 1 ? 'modifica fatta' : 'modifiche fatte'} su due dispositivi: scegli quale tenere`, { label: 'Vedi', fn: openConflitti });
+      else if (interactive) toast('Sincronizzato');
     } catch (e) {
       console.warn(e); syncErr = e.message;
       if (interactive) toast('Sincronizzazione non riuscita: ' + e.message);
@@ -127,7 +144,9 @@
     const low = Core.sottoScorta(S).length, ord = Core.live(S.ordini).filter(o => o.stato !== 'ricevuto').length;
     $('#badgeLow').hidden = !low; $('#badgeLow').textContent = low;
     $('#badgeOrd').hidden = !ord; $('#badgeOrd').textContent = ord;
-    $('#main').innerHTML = { dispensa: viewDispensa, piani: viewPiani, ordini: viewOrdini, altro: viewAltro }[tab]();
+    const conf = Core.conflittiAperti(S).length;
+    $('#main').innerHTML = (conf ? `<button class="avviso forte conflitti" data-act="conflitti">⚠ <b>${conf} ${conf === 1 ? 'conflitto' : 'conflitti'} di sincronizzazione</b> — la stessa cosa è stata cambiata su due dispositivi. Tocca per scegliere cosa tenere.</button>` : '')
+      + { dispensa: viewDispensa, piani: viewPiani, ordini: viewOrdini, altro: viewAltro }[tab]();
     aggiornaDatalist();
     setSyncUI();
   }
@@ -235,9 +254,8 @@
     };
     if (a) $('#delArt').onclick = () => {
       if (!confirm(`Eliminare "${a.nome}"?`)) return;
-      const snap = JSON.stringify(S);
       Core.deleteArticolo(S, a.id); save(); closeSheet();
-      toast('Prodotto eliminato', { label: 'Annulla', fn: () => { S = Core.migrate(JSON.parse(snap)); save(); } });
+      toast('Prodotto eliminato', { label: 'Annulla', fn: () => { const x = S.articoli.find(y => y.id === a.id); if (x) { delete x.del; x.u = new Date(Math.max(Date.now(), Date.parse(x.u) + 1)).toISOString(); save(); } } });
     };
   }
   function movHtml(m) {
@@ -792,6 +810,43 @@
     finestraStampa('Distribuzione per sede ' + Core.fmtData(o.settimana), corpo);
   }
 
+  // ---------- Conflitti di sincronizzazione ----------
+  const CAMPI = { nome: 'Nome', categoria: 'Categoria', unita: 'Unità', fornitore: 'Fornitore', scortaMinima: 'Scorta minima', note: 'Note',
+    pezzo: 'Conversione pezzo', confezione: "Unità minima d'acquisto", sotto: 'Frutta o verdura', classe: 'Classe', materia: 'Materia',
+    lezione: 'Lezione', righe: 'Ingredienti', qb: 'Ingredienti q.b.', descrizione: 'Descrizione', settimana: 'Settimana', stato: 'Stato',
+    voci: 'Piani della settimana', sedeCentrale: 'Sede del magazzino centrale', del: 'Eliminato' };
+  const TIPI = { articoli: 'Prodotto', piani: 'Piano di lavoro', ordini: 'Ordine', impostazioni: 'Impostazioni' };
+  function valoreConflitto(c, v) {
+    if (c.campo === 'del') return v ? '<b>eliminato</b>' : 'tenuto (con le modifiche)';
+    if (c.campo.startsWith('riga:')) return fq(v, (Core.byId(S.articoli, c.campo.slice(5)) || {}).unita || 'pz');
+    if (v == null || v === '') return '<i>vuoto</i>';
+    if (c.campo === 'pezzo' || c.campo === 'confezione') return fq(v.qta, v.unita);
+    if (c.campo === 'unita') return esc(ul(v));
+    if (c.campo === 'settimana') return Core.fmtData(v);
+    if (c.campo === 'voci') return v.map(x => { const p = S.piani.find(y => y.id === x.pianoId); return esc((p && p.nome) || '?') + ' × ' + x.classi + (x.sede ? ' (' + esc(x.sede) + ')' : ''); }).join('<br>') || '<i>nessuno</i>';
+    if (c.campo === 'righe') return v.length + ' righe';
+    if (Array.isArray(v)) return esc(v.join(', '));
+    return esc(typeof v === 'object' ? JSON.stringify(v) : v);
+  }
+  function openConflitti() {
+    const lista = Core.conflittiAperti(S);
+    if (!lista.length) { toast('Nessun conflitto da risolvere'); return; }
+    hideToast();
+    const quando = x => x.u ? new Date(x.u).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+    const lato = (c, k) => { const x = c[k]; return `<label class="scelta"><input type="radio" name="${esc(c.id)}" value="${k}" ${c.scelto === k ? 'checked' : ''}>
+      <span><span class="muted">${esc(x.d || (k === 'a' ? 'Versione A' : 'Versione B'))}${x.u ? ' · ' + quando(x) : ''}${c.scelto === k ? ' · <b>in uso ora</b>' : ''}</span><br>${valoreConflitto(c, x.v)}</span></label>`; };
+    openSheet(`<h3>Conflitti di sincronizzazione</h3>
+      <p class="muted">Queste cose sono state cambiate su due dispositivi prima che si sincronizzassero. Per ora l'app usa la modifica più recente: scegli quale tenere e conferma. Le altre modifiche sono già state unite da sole.</p>
+      ${lista.map(c => `<div class="card conflitto"><div><b>${TIPI[c.tipo] || ''}: ${esc(c.riga || c.nome || '')}</b> — ${esc(c.campo.startsWith('riga:') ? 'Da ordinare' : CAMPI[c.campo] || c.campo)}</div>
+        <div class="scelte">${lato(c, 'a')}${lato(c, 'b')}</div></div>`).join('')}
+      <div class="actions"><button class="btn" id="confOk">Conferma le scelte</button><button class="btn sec" id="confDopo">Decido dopo</button></div>`, true);
+    $('#confDopo').onclick = closeSheet;
+    $('#confOk').onclick = () => {
+      for (const c of lista) { const r = sheet.querySelector(`input[name="${CSS.escape(c.id)}"]:checked`); Core.risolviConflitto(S, c.id, r ? r.value : c.scelto); }
+      save(); closeSheet(); toast('Fatto: le scelte arrivano anche sugli altri dispositivi');
+    };
+  }
+
   // ---------- Vista: Altro ----------
   function listaEditabile(lista, titolo, aiuto, ph) {
     const items = S.impostazioni[lista];
@@ -889,6 +944,7 @@
       case 'expCsv': download('prodotti.csv', '﻿' + Core.esportaArticoliCSV(S), 'text/csv'); break;
       case 'expJson': download(`magazzino-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(S, null, 1), 'application/json'); break;
       case 'impJson': $('#fileJson').click(); break;
+      case 'conflitti': openConflitti(); break;
     }
   });
   $('#filePiani').addEventListener('change', e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) importaPiani(fs); });

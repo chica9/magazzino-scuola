@@ -381,4 +381,100 @@ test('unità minima d\'acquisto: l\'ordine arrotonda ai multipli', () => {
   assert.strictEqual(an.voci[0].scorta, '2');
 });
 
+test('sincronizzazione: unione campo per campo e conflitti da scegliere', () => {
+  const clone = x => JSON.parse(JSON.stringify(x));
+  const base = C.emptyState();
+  base.impostazioni.fornitori = ['DAC', 'Rigaglia', 'LP']; base.impostazioni.u = '2026-01-01T00:00:00.000Z';
+  const a0 = C.addArticolo(base, { nome: 'Acciughe', unita: 'kg', fornitore: 'Rigaglia', giacenza: 2 });
+  const b0 = C.addArticolo(base, { nome: 'Burro', unita: 'kg', fornitore: 'DAC' });
+  const tel = clone(base), tab = clone(base);
+  C.setDispositivo('Telefono');
+  C.updateArticolo(tel, a0.id, { fornitore: 'Santopadre', scortaMinima: 1 });   // telefono: fornitore + scorta
+  C.movimento(tel, a0.id, 3, 'carico');                                          // +3
+  C.aggiungiVoce(tel, 'fornitori', 'Santopadre');
+  C.deleteArticolo(tel, b0.id);                                                  // telefono elimina il burro
+  C.setDispositivo('Tablet');
+  C.updateArticolo(tab, a0.id, { note: 'sott\'olio' });                         // tablet: note (campo diverso)
+  C.movimento(tab, a0.id, -1, 'scarico');                                        // −1
+  C.rimuoviVoce(tab, 'fornitori', 'LP');
+  C.updateArticolo(tab, b0.id, { scortaMinima: 2 });                             // ...mentre il tablet lo modifica
+  // il telefono sincronizza per primo (nessun conflitto), poi il tablet unisce con il remoto
+  const remoto = C.merge(tel, base, base);
+  assert.strictEqual(C.conflittiAperti(remoto).length, 0);
+  let m = C.merge(tab, remoto, base);
+  const a = m.articoli.find(x => x.id === a0.id);
+  assert.deepStrictEqual([a.fornitore, a.scortaMinima, a.note, a.giacenza], ['Santopadre', 1, 'sott\'olio', 4]); // 2 + 3 − 1
+  assert.deepStrictEqual(m.impostazioni.fornitori, ['DAC', 'Rigaglia', 'Santopadre']); // + dal telefono, − dal tablet
+  const burro = m.articoli.find(x => x.id === b0.id);
+  assert.ok(!burro.del && burro.scortaMinima === 2);                              // modificato altrove: resta, ma si chiede
+  assert.deepStrictEqual(C.conflittiAperti(m).map(c => c.campo), ['del']);
+  // stesso campo cambiato sui due dispositivi
+  const tel2 = clone(m), tab2 = clone(m);
+  C.setDispositivo('Telefono'); C.updateArticolo(tel2, a0.id, { fornitore: 'Rigaglia' });
+  C.setDispositivo('Tablet'); C.updateArticolo(tab2, a0.id, { fornitore: 'DAC' });   // più recente
+  const at = tab2.articoli.find(x => x.id === a0.id); at.u = new Date(Date.parse(at.u) + 1000).toISOString();
+  const m2 = C.merge(tel2, tab2, m);
+  const c = C.conflittiAperti(m2).find(x => x.campo === 'fornitore');
+  assert.deepStrictEqual([c.a.v, c.a.d, c.b.v, c.b.d, c.scelto], ['Rigaglia', 'Telefono', 'DAC', 'Tablet', 'b']);
+  assert.strictEqual(m2.articoli.find(x => x.id === a0.id).fornitore, 'DAC');     // per ora il più recente
+  C.risolviConflitto(m2, c.id, 'a');                                              // l'utente sceglie il telefono
+  assert.strictEqual(m2.articoli.find(x => x.id === a0.id).fornitore, 'Rigaglia');
+  const cb = C.conflittiAperti(m2)[0];                                            // burro: tiene l'eliminazione del telefono
+  C.risolviConflitto(m2, cb.id, cb.a.v ? 'a' : 'b');
+  assert.ok(m2.articoli.find(x => x.id === b0.id).del);
+  assert.strictEqual(C.conflittiAperti(m2).length, 0);
+  // la scelta arriva al tablet (che aveva già inviato la sua versione: è la sua base) e il conflitto non ricompare
+  const m3 = C.merge(tab2, m2, tab2);
+  assert.strictEqual(C.conflittiAperti(m3).length, 0);
+  assert.strictEqual(m3.articoli.find(x => x.id === a0.id).fornitore, 'Rigaglia');
+  C.setDispositivo('');
+});
+
+test('sincronizzazione: «Da ordinare» cambiato a mano su due dispositivi', () => {
+  const clone = x => JSON.parse(JSON.stringify(x));
+  const s = C.emptyState();
+  const f = C.addArticolo(s, { nome: 'Farina', unita: 'kg' }), z = C.addArticolo(s, { nome: 'Zucchero', unita: 'kg' });
+  const p = C.addPiano(s, { nome: 'P', righe: [{ articoloId: f.id, qta: 2, unita: 'kg' }, { articoloId: z.id, qta: 1, unita: 'kg' }] });
+  const o = C.addOrdine(s, { voci: [{ pianoId: p.id, classi: 1, sede: '' }] });
+  const x = clone(s), y = clone(s);
+  C.setDaOrdinare(x, o.id, f.id, 5); C.setDaOrdinare(x, o.id, z.id, 3);
+  C.setDaOrdinare(y, o.id, f.id, 6);
+  const m = C.merge(x, y, s);
+  const righe = m.ordini[0].righe;
+  assert.strictEqual(righe.find(r => r.articoloId === z.id).daOrdinare, 3);       // cambiato solo da una parte
+  const c = C.conflittiAperti(m);
+  assert.deepStrictEqual(c.map(k => [k.campo, k.a.v, k.b.v]), [['riga:' + f.id, 5, 6]]);
+});
+
+test('sincronizzazione: casi trovati dalla revisione', () => {
+  const clone = x => JSON.parse(JSON.stringify(x));
+  const base = C.emptyState();
+  const f = C.addArticolo(base, { nome: 'Farina', unita: 'kg', giacenza: 10 });
+  const a = clone(base), b = clone(base);
+  C.movimento(a, f.id, 3, 'carico'); C.movimento(b, f.id, 3, 'carico');
+  // 1. l'unione non modifica lo stato in ingresso
+  const prima = JSON.stringify(a);
+  C.merge(a, b);
+  assert.strictEqual(JSON.stringify(a), prima);
+  // 2. due carichi uguali su due dispositivi si sommano, con e senza base
+  assert.strictEqual(C.merge(a, b).articoli[0].giacenza, 16);
+  assert.strictEqual(C.merge(a, b, base).articoli[0].giacenza, 16);
+  // 3. un record cancellato da tanto resta come segnaposto e non rivive
+  const r = clone(base); C.deleteArticolo(r, f.id); r.articoli[0].u = '2020-01-01T00:00:00.000Z';
+  C.compatta(r);
+  assert.deepStrictEqual(Object.keys(r.articoli[0]).sort(), ['del', 'id', 'u']);
+  const vecchio = clone(base); vecchio.articoli[0].u = '2019-01-01T00:00:00.000Z';
+  assert.ok(C.merge(vecchio, r, vecchio).articoli[0].del);
+  assert.ok(C.merge(vecchio, r).articoli[0].del);
+  // 4. prima sincronizzazione di un dispositivo nuovo: non cancella gli elenchi remoti
+  const remoto = C.emptyState(); remoto.impostazioni.fornitori = ['DAC', 'Santopadre']; remoto.impostazioni.sedi = ['Giarre']; remoto.impostazioni.sedeCentrale = 'Giarre';
+  const nuovo = C.emptyState(); C.aggiungiVoce(nuovo, 'fornitori', 'Rigaglia');      // più recente
+  const m = C.merge(nuovo, remoto);
+  assert.deepStrictEqual([m.impostazioni.fornitori, m.impostazioni.sedi, m.impostazioni.sedeCentrale], [['Rigaglia', 'DAC', 'Santopadre'], ['Giarre'], 'Giarre']);
+  // 6. orologio indietro: la nuova modifica risulta comunque più recente
+  const x = { u: '2099-01-01T00:00:00.000Z' };
+  C.updateArticolo({ articoli: [Object.assign(x, { id: 'q', nome: 'Q', unita: 'kg' })], impostazioni: { fornitori: [] } }, 'q', { note: 'n' });
+  assert.ok(x.u > '2099-01-01T00:00:00.000Z');
+});
+
 run();

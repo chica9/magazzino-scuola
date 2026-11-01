@@ -36,6 +36,8 @@ I file `.doc` (Word vecchio) vanno prima salvati come `.docx`. Le quantità dei 
 
 **Impostazioni** — sincronizzazione, import/export, sedi, fornitori, categorie, movimenti recenti.
 
+**Conflitti di sincronizzazione** — ogni dispositivo ricorda la versione dell'ultima sincronizzazione e unisce le modifiche campo per campo: se sul telefono cambia il fornitore e sul tablet la scorta minima dello stesso prodotto, restano entrambe; carichi e scarichi fatti su più dispositivi si sommano. Se lo stesso campo è stato cambiato su due dispositivi in modo diverso (o un prodotto è stato eliminato su uno e modificato sull'altro) l'app tiene per ora la modifica più recente e mostra in alto «⚠ conflitti di sincronizzazione»: si vedono le due versioni, con dispositivo e ora, e si sceglie quale tenere. I record eliminati restano nel file come segnaposto vuoti, così un dispositivo rimasto a lungo offline non li fa ricomparire.
+
 Il bollino in alto indica lo stato della sincronizzazione: verde sincronizzato, arancione modifiche non ancora inviate, blu in corso, rosso errore o offline, grigio non collegato.
 
 ## Dati: nessun dato della scuola nel repo pubblico

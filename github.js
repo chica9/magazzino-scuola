@@ -13,11 +13,12 @@
       token: (c.token ?? cur.token ?? '').trim(), path: (c.path ?? cur.path ?? 'magazzino.json').trim().replace(/^\/+/, ''), branch: (c.branch ?? cur.branch ?? '').trim() };
     localStorage.setItem(KEY, JSON.stringify(next));
     localStorage.removeItem('mag.sha');
+    if (next.repo !== cur.repo || next.path !== cur.path) localStorage.removeItem('mag.base'); // altro file: la base non vale più
     return next;
   }
   function configured() { const c = config(); return !!(c.repo && c.token && c.path); }
   function loggedIn() { return configured(); }
-  function logout() { localStorage.removeItem(KEY); localStorage.removeItem('mag.sha'); localStorage.removeItem('mag.lastSync'); localStorage.removeItem('mag.lastBackup'); }
+  function logout() { localStorage.removeItem(KEY); localStorage.removeItem('mag.sha'); localStorage.removeItem('mag.base'); localStorage.removeItem('mag.lastSync'); localStorage.removeItem('mag.lastBackup'); }
 
   // ---- utilità base64 UTF-8 ----
   function enc(str) { const b = new TextEncoder().encode(str); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); }
@@ -25,7 +26,7 @@
 
   async function api(path, opt = {}) {
     const c = config();
-    const r = await fetch(API + path, Object.assign({}, opt, { headers: Object.assign({
+    const r = await fetch(API + path, Object.assign({ cache: 'no-store' }, opt, { headers: Object.assign({
       Authorization: 'Bearer ' + c.token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }, opt.headers || {}) }));
     if (r.status === 401) throw new Error('Token GitHub non valido o scaduto: inseriscine uno nuovo in Impostazioni');
     if (r.status === 403 && /rate limit/i.test(await r.clone().text())) throw new Error('Troppe richieste a GitHub, riprova tra qualche minuto');
@@ -79,15 +80,15 @@
   }
 
   /**
-   * Sincronizza: scarica il remoto, unisce con il locale (Core.merge), ricarica il risultato.
+   * Sincronizza: scarica il remoto, unisce con il locale (Core.merge, a 3 vie con la base dell'ultima sincronizzazione), ricarica il risultato.
    * Se nel frattempo il file è cambiato (conflitto di sha) riprova fino a 3 volte.
    */
-  async function sync(localState) {
+  async function sync(localState, base) {
     if (!configured()) throw new Error('GitHub non configurato (Impostazioni → Sincronizzazione)');
     let merged = null;
     for (let tent = 0; tent < 3; tent++) {
       const remote = await download();
-      merged = remote && remote.data ? root.Core.merge(localState, remote.data) : root.Core.migrate(localState);
+      merged = remote && remote.data ? root.Core.merge(localState, remote.data, base) : root.Core.migrate(localState);
       root.Core.compatta(merged);
       const content = JSON.stringify(merged, null, 1);
       try {

@@ -221,6 +221,7 @@
       piani: [],      // {id, nome, descrizione, classe, materia, lezione, file, righe:[{articoloId, qta, unita, testo}], qb:[nome], u, del}
       ordini: [],     // {id, nome, settimana, data, stato, voci:[{pianoId, classi, sede}], righe:[...], note, u, del}
       impostazioni: { categorie: CATEGORIE_DEFAULT.slice(), fornitori: [], sedi: [], sedeCentrale: '', sezioni: {}, u: '1970-01-01T00:00:00.000Z' },
+      conflitti: [],  // conflitti di sincronizzazione da far scegliere all'utente (vedi merge)
       updatedAt: now(),
     };
   }
@@ -230,7 +231,7 @@
     const e = emptyState();
     if (!s || typeof s !== 'object') return e;
     const out = Object.assign(e, s);
-    for (const k of ['articoli', 'movimenti', 'piani', 'ordini']) if (!Array.isArray(out[k])) out[k] = [];
+    for (const k of ['articoli', 'movimenti', 'piani', 'ordini', 'conflitti']) if (!Array.isArray(out[k])) out[k] = [];
     out.impostazioni = Object.assign(emptyState().impostazioni, s.impostazioni || {});
     for (const k of ['categorie', 'fornitori', 'sedi']) if (!Array.isArray(out.impostazioni[k])) out.impostazioni[k] = k === 'categorie' ? CATEGORIE_DEFAULT.slice() : [];
     if (typeof out.impostazioni.sedeCentrale !== 'string') out.impostazioni.sedeCentrale = '';
@@ -249,8 +250,16 @@
 
   const byId = (arr, id) => arr.find(x => x.id === id && !x.del);
   const live = arr => arr.filter(x => !x.del);
-  function touch(obj) { obj.u = now(); return obj; }
-  function touchImpostazioni(state) { state.impostazioni.u = now(); state.updatedAt = now(); }
+  // nome del dispositivo che fa le modifiche (es. «Tablet Android»): serve a spiegare i conflitti
+  let DISPOSITIVO = '';
+  function setDispositivo(nome) { DISPOSITIVO = String(nome || ''); }
+  function touch(obj) {
+    const n = now(); // se un altro dispositivo ha l'orologio avanti, la modifica nuova deve comunque risultare più recente
+    obj.u = obj.u && obj.u >= n ? new Date(Date.parse(obj.u) + 1).toISOString() : n;
+    if (DISPOSITIVO) obj.d = DISPOSITIVO;
+    return obj;
+  }
+  function touchImpostazioni(state) { state.impostazioni.u = now(); if (DISPOSITIVO) state.impostazioni.d = DISPOSITIVO; state.updatedAt = now(); }
 
   function aggiungiVoce(state, lista, valore) {
     valore = String(valore ?? '').trim();
@@ -677,41 +686,171 @@
   }
 
   // ---------- Sync / merge ----------
-  /** Unisce due stati: per ogni record vince la modifica più recente (campo u); i movimenti sono solo aggiunti. */
-  function merge(local, remote) {
-    local = migrate(local); remote = migrate(remote);
-    const out = emptyState();
+  /**
+   * Unisce lo stato locale con quello remoto.
+   * Con `base` (lo stato dell'ultima sincronizzazione riuscita di questo dispositivo) l'unione è campo per campo:
+   * un campo cambiato da una parte sola prende quel valore; cambiato da entrambe in modo diverso è un conflitto:
+   * si tiene per ora la versione più recente e si aggiunge a `conflitti`, perché l'utente scelga.
+   * Le giacenze si sommano (sono fatte di movimenti), i nomi riconosciuti e gli elenchi di Impostazioni si uniscono.
+   * Senza base (prima sincronizzazione) vince per ogni record la modifica più recente.
+   */
+  function merge(local, remote, base) {
+    // copie: l'unione non deve modificare lo stato in uso (altrimenti un tentativo fallito lascia giacenze già corrette)
+    const copia = x => JSON.parse(JSON.stringify(x));
+    local = migrate(copia(local)); remote = migrate(copia(remote)); base = base ? migrate(copia(base)) : null;
+    const out = emptyState(), nuovi = [];
+    const locM = new Set(local.movimenti.map(m => m.id)), remM = new Set(remote.movimenti.map(m => m.id));
     for (const k of ['articoli', 'piani', 'ordini']) {
-      const m = new Map();
-      for (const x of [...remote[k], ...local[k]]) {
-        const cur = m.get(x.id);
-        if (!cur || (x.u || '') > (cur.u || '')) m.set(x.id, x);
+      const L = perId(local[k]), R = perId(remote[k]), B = base ? perId(base[k]) : null;
+      out[k] = [];
+      for (const id of new Set([...R.keys(), ...L.keys()])) {
+        const l = L.get(id), r = R.get(id);
+        if (!l || !r) { out[k].push(l || r); continue; }
+        const b = B && B.get(id);
+        if (b) { out[k].push(unisciRecord(k, l, r, b, nuovi)); continue; }
+        // senza base: vince il più recente; la giacenza recupera i movimenti che il vincitore non aveva visto
+        const win = (l.u || '') >= (r.u || '') ? l : r;
+        if (k === 'articoli') {
+          const vistiDaWin = win === l ? locM : remM;
+          const mancanti = [...remote.movimenti, ...local.movimenti].filter((m, i, a) => m.articoloId === id && !vistiDaWin.has(m.id) && a.findIndex(x => x.id === m.id) === i);
+          out[k].push({ ...win, giacenza: round3(num(win.giacenza) + mancanti.reduce((x, m) => x + num(m.delta), 0)) });
+        } else out[k].push(win);
       }
-      out[k] = [...m.values()];
     }
     const mm = new Map();
     for (const x of [...remote.movimenti, ...local.movimenti]) mm.set(x.id, x);
     out.movimenti = [...mm.values()].sort((a, b) => a.data.localeCompare(b.data));
-    // La giacenza è un campo dell'articolo: con modifiche concorrenti sullo stesso articolo vince la più recente,
-    // ma ricalcoliamo i movimenti mancanti all'altra parte per non perdere carichi/scarichi.
-    const locM = new Set(local.movimenti.map(m => m.id)), remM = new Set(remote.movimenti.map(m => m.id));
-    for (const art of out.articoli) {
-      const la = local.articoli.find(a => a.id === art.id), ra = remote.articoli.find(a => a.id === art.id);
-      if (!la || !ra || la.giacenza === ra.giacenza) continue;
-      const winnerIsLocal = art === la;
-      // applica i movimenti che il vincitore non aveva ancora visto
-      const missing = out.movimenti.filter(m => m.articoloId === art.id && (winnerIsLocal ? !locM.has(m.id) : !remM.has(m.id)));
-      art.giacenza = round3(art.giacenza + missing.reduce((s, m) => s + m.delta, 0));
+    // giacenza = quella della base + tutti i movimenti che la base non aveva (da qualunque dispositivo vengano)
+    if (base) {
+      const BA = perId(base.articoli), baseM = new Set(base.movimenti.map(m => m.id)), delta = new Map();
+      for (const m of out.movimenti) if (!baseM.has(m.id)) delta.set(m.articoloId, (delta.get(m.articoloId) || 0) + num(m.delta));
+      out.articoli = out.articoli.map(a => { const b = BA.get(a.id); return b && !a.del && inEntrambi(local, remote, a.id) ? { ...a, giacenza: round3(num(b.giacenza) + (delta.get(a.id) || 0)) } : a; });
     }
-    out.impostazioni = (local.impostazioni.u || '') >= (remote.impostazioni.u || '') ? local.impostazioni : remote.impostazioni;
+    // senza base (prima sincronizzazione di un dispositivo) gli elenchi si uniscono senza togliere nulla
+    out.impostazioni = unisciImpostazioni(local.impostazioni, remote.impostazioni,
+      base ? base.impostazioni : { categorie: [], fornitori: [], sedi: [], sezioni: {}, sedeCentrale: '' }, nuovi);
+    // conflitti: quelli già noti (da entrambe le parti, vince l'aggiornamento più recente) + i nuovi
+    const cm = new Map();
+    for (const c of [...remote.conflitti, ...local.conflitti, ...nuovi]) { const cur = cm.get(c.id); if (!cur || (c.u || '') > (cur.u || '')) cm.set(c.id, c); }
+    out.conflitti = [...cm.values()];
     out.updatedAt = now();
     return out;
   }
+  const perId = arr => new Map(arr.map(x => [x.id, x]));
+  const inEntrambi = (l, r, id) => l.articoli.some(x => x.id === id) && r.articoli.some(x => x.id === id);
+  /** JSON con le chiavi in ordine, per confrontare oggetti costruiti in modi diversi. */
+  function stabile(v) {
+    if (Array.isArray(v)) return '[' + v.map(stabile).join(',') + ']';
+    if (v && typeof v === 'object') return '{' + Object.keys(v).filter(k => v[k] !== undefined).sort().map(k => JSON.stringify(k) + ':' + stabile(v[k])).join(',') + '}';
+    return JSON.stringify(v ?? null);
+  }
+  const uguale = (a, b) => stabile(a) === stabile(b);
+  const NON_DATI = new Set(['u', 'd']);
+  const senza = (o, ...k) => { const c = { ...o }; for (const x of [...NON_DATI, ...k]) delete c[x]; return c; };
+  /** Valore unito di un campo: 3 vie; null = conflitto. */
+  function treVie(lv, rv, bv) {
+    if (uguale(lv, rv)) return { v: lv };
+    if (uguale(lv, bv)) return { v: rv };
+    if (uguale(rv, bv)) return { v: lv };
+    return null;
+  }
+  /** Unione a 3 vie di elenchi di testi (aggiunte e tolte da entrambe le parti). */
+  function unisciElenco(l = [], r = [], b = []) {
+    const tolti = new Set([...b.filter(x => !l.includes(x)), ...b.filter(x => !r.includes(x))]);
+    return [...new Set([...l, ...r])].filter(x => !tolti.has(x));
+  }
+  function conflitto(nuovi, tipo, l, r, campo, lv, rv, scelto, extra) {
+    const c = { id: [tipo, l.id, campo, stabile(lv), stabile(rv)].join('|'), tipo, recId: l.id, nome: r.nome || l.nome || '', campo,
+      a: { v: lv, d: l.d || '', u: l.u || '' }, b: { v: rv, d: r.d || '', u: r.u || '' }, scelto, risolto: false, data: now(), u: now(), ...extra };
+    nuovi.push(c);
+    return c;
+  }
+  function unisciRecord(k, l, r, b, nuovi) {
+    if (uguale(senza(l), senza(r))) return (l.u || '') >= (r.u || '') ? l : r;
+    const recente = (l.u || '') >= (r.u || '') ? 'a' : 'b';
+    // eliminato da una parte e modificato dall'altra: per sicurezza resta, e l'utente decide
+    if (!!l.del !== !!r.del) {
+      const [cancellato, altro] = l.del ? [l, r] : [r, l];
+      if (uguale(senza(altro, 'del'), senza(b, 'del'))) return cancellato;
+      conflitto(nuovi, k, l, r, 'del', !!l.del, !!r.del, l.del ? 'b' : 'a');
+      return { ...altro, u: now() };
+    }
+    const res = {};
+    for (const key of new Set([...Object.keys(b), ...Object.keys(l), ...Object.keys(r)])) {
+      if (NON_DATI.has(key)) continue;
+      const lv = l[key], rv = r[key], bv = b[key];
+      if (k === 'articoli' && key === 'giacenza') { res.giacenza = lv; continue; } // ricalcolata dai movimenti in merge
+      if (k === 'articoli' && key === 'alias') { res.alias = unisciElenco(lv, rv, bv); continue; }
+      if (k === 'ordini' && key === 'righe') { res.righe = unisciRighe(l, r, b, recente, nuovi); continue; }
+      const t = treVie(lv, rv, bv);
+      if (t) { if (t.v !== undefined) res[key] = t.v; continue; }
+      conflitto(nuovi, k, l, r, key, lv, rv, recente);
+      if ((recente === 'a' ? lv : rv) !== undefined) res[key] = recente === 'a' ? lv : rv;
+    }
+    res.u = now(); res.d = (recente === 'a' ? l : r).d || '';
+    if (!res.d) delete res.d;
+    return res;
+  }
+  /** Righe d'ordine: si ricalcolano da sole; contano solo le quantità cambiate a mano e le righe aggiunte a mano. */
+  function unisciRighe(l, r, b, recente, nuovi) {
+    const base = perId((b.righe || []).map(x => ({ ...x, id: x.articoloId })));
+    const altre = perId(((recente === 'a' ? r : l).righe || []).map(x => ({ ...x, id: x.articoloId })));
+    const righe = ((recente === 'a' ? l : r).righe || []).map(x => ({ ...x }));
+    for (const x of righe) {
+      const y = altre.get(x.articoloId), z = base.get(x.articoloId);
+      if (!y) continue;
+      const q = rr => ({ daOrdinare: rr.daOrdinare, manuale: !!rr.manuale });
+      const [rx, ry] = recente === 'a' ? [x, y] : [y, x];
+      const t = treVie(q(rx), q(ry), z ? q(z) : undefined);
+      if (t) Object.assign(x, t.v);
+      else if (rx.manuale && ry.manuale) conflitto(nuovi, 'ordini', l, r, 'riga:' + x.articoloId, rx.daOrdinare, ry.daOrdinare, recente, { riga: x.nome });
+    }
+    // righe aggiunte a mano solo dall'altra parte
+    for (const y of altre.values()) if (y.extra && !righe.some(x => x.articoloId === y.articoloId) && !base.has(y.articoloId)) { const c = { ...y }; delete c.id; righe.push(c); }
+    return righe;
+  }
+  function unisciImpostazioni(l, r, b, nuovi) {
+    const res = { ...((l.u || '') >= (r.u || '') ? l : r) };
+    for (const k of ['categorie', 'fornitori', 'sedi']) res[k] = unisciElenco(l[k], r[k], b[k]);
+    res.sezioni = { ...b.sezioni };
+    for (const k of new Set([...Object.keys(l.sezioni || {}), ...Object.keys(r.sezioni || {}), ...Object.keys(b.sezioni || {})])) {
+      const t = treVie((l.sezioni || {})[k], (r.sezioni || {})[k], (b.sezioni || {})[k]);
+      const v = t ? t.v : ((l.u || '') >= (r.u || '') ? l.sezioni : r.sezioni)[k];
+      if (v === undefined) delete res.sezioni[k]; else res.sezioni[k] = v;
+    }
+    const t = treVie(l.sedeCentrale, r.sedeCentrale, b.sedeCentrale);
+    if (t) res.sedeCentrale = t.v;
+    else conflitto(nuovi, 'impostazioni', { ...l, id: 'impostazioni' }, { ...r, id: 'impostazioni', nome: 'Impostazioni' }, 'sedeCentrale', l.sedeCentrale, r.sedeCentrale, (l.u || '') >= (r.u || '') ? 'a' : 'b');
+    if (!uguale(senza(res), senza(l)) && !uguale(senza(res), senza(r))) res.u = now();
+    return res;
+  }
+  /** Applica la scelta dell'utente per un conflitto ('a' o 'b'). */
+  function risolviConflitto(state, id, scelta) {
+    const c = state.conflitti.find(x => x.id === id);
+    if (!c) return;
+    if (scelta !== c.scelto) {
+      const v = (scelta === 'a' ? c.a : c.b).v;
+      if (c.tipo === 'impostazioni') { state.impostazioni[c.campo] = v; touchImpostazioni(state); }
+      else {
+        const rec = state[c.tipo].find(x => x.id === c.recId);
+        if (rec) {
+          if (c.campo === 'del') { if (v) rec.del = true; else delete rec.del; }
+          else if (c.campo.startsWith('riga:')) { const rg = (rec.righe || []).find(x => x.articoloId === c.campo.slice(5)); if (rg) { rg.daOrdinare = v; rg.manuale = true; } }
+          else if (v === undefined) delete rec[c.campo]; else rec[c.campo] = v;
+          touch(rec);
+        }
+      }
+    }
+    c.scelto = scelta; c.risolto = true; c.u = now(); state.updatedAt = now();
+  }
+  const conflittiAperti = state => (state.conflitti || []).filter(c => !c.risolto);
 
-  /** Rimuove record cancellati più vecchi di `giorni` (pulizia). */
+  /** Pulizia: svuota i record cancellati da più di `giorni` e toglie i conflitti già risolti. */
   function compatta(state, giorni = 60) {
     const lim = new Date(Date.now() - giorni * 864e5).toISOString();
-    for (const k of ['articoli', 'piani', 'ordini']) state[k] = state[k].filter(x => !x.del || (x.u || '') > lim);
+    // i record cancellati restano come segnaposto vuoto: tolti del tutto, un dispositivo rimasto offline li farebbe rivivere
+    for (const k of ['articoli', 'piani', 'ordini']) state[k] = state[k].map(x => x.del && (x.u || '') <= lim ? { id: x.id, del: true, u: x.u } : x);
+    state.conflitti = (state.conflitti || []).filter(c => !c.risolto || (c.u || '') > lim);
     return state;
   }
 
@@ -729,5 +868,6 @@
     addPiano, updatePiano, deletePiano, fabbisogno, scaricaPiano,
     righeOrdine, quoteSedi, quotaMagazzino, multiploAcquisto, arrotondaConfezione, confezioniDi, qbOrdine, addOrdine, updateOrdine, ricalcolaOrdine, setDaOrdinare, addRigaExtra, deleteOrdine, riceviOrdine,
     sediOrdine, testoOrdine, csvOrdine,
-    lunediProssimo, lunediDi, fmtData, annoScolastico, toCSV, parseCSV, esportaArticoliCSV, merge, compatta, riepilogo };
+    lunediProssimo, lunediDi, fmtData, annoScolastico, toCSV, parseCSV, esportaArticoliCSV, merge, compatta, riepilogo,
+    setDispositivo, risolviConflitto, conflittiAperti };
 });
