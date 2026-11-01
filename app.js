@@ -1,7 +1,7 @@
 /* app.js — interfaccia del Magazzino scolastico. Logica in core.js, import in importa.js/leggi.js, sync in github.js. */
 (function () {
   'use strict';
-  const APP_VERSION = '2.2.1';
+  const APP_VERSION = '2.3.0';
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -163,7 +163,7 @@
       const low = a.scortaMinima > 0 && a.giacenza < a.scortaMinima;
       return `<div class="item ${low ? 'low' : ''}" data-art="${a.id}">
           <div class="grow"><div class="title">${esc(a.nome)}</div>
-          <div class="muted">${conCat ? esc(Core.gruppoCategoria(a)) + ' · ' : ''}${a.fornitore ? esc(a.fornitore) : '<i>nessun fornitore</i>'}${a.scortaMinima ? ' · min ' + fq(a.scortaMinima, a.unita) : ''}</div></div>
+          <div class="muted">${conCat ? esc(Core.gruppoCategoria(a)) + ' · ' : ''}${a.fornitore ? esc(a.fornitore) : '<i>nessun fornitore</i>'}${a.scortaMinima ? ' · min ' + fq(a.scortaMinima, a.unita) : ''}${a.confezione ? ' · conf. ' + fq(a.confezione.qta, a.confezione.unita) : ''}</div></div>
           <div class="qty">${fq(a.giacenza, a.unita)}${low ? '<small>sotto scorta</small>' : ''}</div>
           <button class="btn sec icon" data-mov="${a.id}" title="Carico / scarico / inventario" aria-label="Carico o scarico">±</button>
         </div>`;
@@ -194,6 +194,8 @@
           <label class="f">${a ? 'Giacenza attuale' : 'Giacenza iniziale'}<input name="giacenza" inputmode="decimal" value="${a ? a.giacenza : ''}" placeholder="0"></label>
           <label class="f">Scorta minima<input name="scortaMinima" inputmode="decimal" value="${a?.scortaMinima || ''}" placeholder="avviso sotto…"></label>
         </div>
+        <div class="f">Unità minima d'acquisto <span class="muted">(facoltativa: l'ordine arrotonda a multipli di questa)</span>
+          <div class="row"><input name="cq" inputmode="decimal" value="${v.confezione ? String(v.confezione.qta).replace('.', ',') : ''}" placeholder="es. 5" style="width:90px"> <select name="cu">${unitOpts(v.confezione ? v.confezione.unita : v.unita)}</select></div></div>
         <label class="f">Fornitore<select name="fornitore">${opts([...new Set([...S.impostazioni.fornitori, v.fornitore].filter(Boolean))], v.fornitore, '— nessuno —')}</select></label>
         <fieldset class="conv"><legend>Conversione pezzi ↔ peso/volume <span class="muted">(facoltativa)</span></legend>
           <div class="muted">Serve quando nei piani il prodotto è scritto in modo diverso dal magazzino: es. limoni «n. 3» ma in magazzino a kg, oppure liquore «10 cl» ma in magazzino a bottiglie.</div>
@@ -208,16 +210,20 @@
       e.preventDefault();
       const d = Object.fromEntries(new FormData(e.target));
       const pezzo = Core.num(d.pq) > 0 ? { qta: d.pq, unita: d.pu } : null;
+      const confezione = Core.num(d.cq) > 0 ? { qta: d.cq, unita: d.cu } : null;
+      if (confezione && !Core.multiploAcquisto({ unita: d.unita, pezzo: pezzo && { qta: Core.num(pezzo.qta), unita: pezzo.unita }, confezione: { qta: Core.num(confezione.qta), unita: confezione.unita } })) {
+        toast(`Non so convertire ${d.cq} ${Core.UNITS[d.cu].label} in ${Core.UNITS[d.unita].label}: compila la conversione pezzi ↔ peso/volume`); return;
+      }
       const dup = artDaNome(d.nome);
       if (dup && dup.id !== a?.id && !confirm(`Esiste già "${dup.nome}". Salvare comunque un secondo prodotto con lo stesso nome?`)) return;
       try {
         let art;
         if (a) {
           const g = Core.num(d.giacenza);
-          Core.updateArticolo(S, a.id, { nome: d.nome, categoria: d.categoria, sotto: d.sotto || '', unita: d.unita, scortaMinima: d.scortaMinima, fornitore: d.fornitore, note: d.note, pezzo });
+          Core.updateArticolo(S, a.id, { nome: d.nome, categoria: d.categoria, sotto: d.sotto || '', unita: d.unita, scortaMinima: d.scortaMinima, fornitore: d.fornitore, note: d.note, pezzo, confezione });
           if (g !== a.giacenza) Core.movimento(S, a.id, g, 'rettifica', 'Modifica manuale');
           art = a;
-        } else art = Core.addArticolo(S, { ...d, pezzo });
+        } else art = Core.addArticolo(S, { ...d, pezzo, confezione });
         save(); closeSheet(); toast(a ? 'Prodotto aggiornato' : 'Prodotto aggiunto');
         if (preset && preset.onCreate) preset.onCreate(art);
       } catch (err) { toast(err.message); }
@@ -491,7 +497,7 @@
       const fs = Importa.fornitoreVoce(an, v);
       return `<tr class="${v.azione === 'salta' ? 'off' : ''}" data-i="${i}">
         <td><input type="checkbox" class="ia-ok" ${v.azione !== 'salta' ? 'checked' : ''} aria-label="Importa"></td>
-        <td><input class="ia-nome" value="${esc(v.nome)}">${v.avviso ? `<div class="warn small">${esc(v.avviso)}</div>` : ''}${v.simile ? `<div class="muted small">Simile a «${esc(v.simile)}» già in dispensa</div>` : ''}</td>
+        <td><input class="ia-nome" value="${esc(v.nome)}">${v.avviso ? `<div class="warn small">${esc(v.avviso)}</div>` : ''}${v.simile ? `<div class="muted small">Simile a «${esc(v.simile)}» già in dispensa</div>` : ''}${v.confezione ? `<div class="muted small">Confezione: ${fq(v.confezione.qta, v.confezione.unita)}</div>` : ''}</td>
         <td><select class="ia-u">${unitOpts(v.unita)}</select></td>
         <td><select class="ia-cat">${opts(cats(), v.categoria)}</select></td>
         <td><select class="ia-forn">${opts([...new Set([...S.impostazioni.fornitori, fs].filter(Boolean))], v.fornitore, v.sezione ? `(dalla sezione: ${an.sezioni.find(s => s.nome === v.sezione)?.fornitore || 'nessuno'})` : '— nessuno —')}</select></td>
@@ -633,7 +639,9 @@
         const perSede = ps.length > 1 || (ps.length === 1 && ps[0][0]) ? `<div class="persede">${ps.map(([s, q]) => `<span>${s && s === sc ? '<b>' + esc(s) + '</b> (magazzino)' : esc(s || 'sede non indicata')}: ${fq(q, r.unita)}</span>`).join('')}</div>` : '';
         const tip = r.dettaglio.map(d => `${d.nome} × ${d.classi}${d.sede ? ' (' + d.sede + ')' : ''}: ${fq(d.qta, r.unita)}`).join('\n');
         const fabb = f.sede ? (r.perSede || {})[sedeKey] || 0 : r.fabbisogno;
-        h += `<tr><td title="${esc(tip)}"><div class="nome">${esc(r.nome)}${r.extra ? ' <span class="tag">extra</span>' : ''}${r.errori.length ? ` <span class="tag warn" title="${esc(r.errori.join('\n'))}">conversione mancante</span>` : ''}</div>${ui.odVista !== 'forn' && !f.forn ? `<div class="persede"><span>${esc(r.fornitore || 'senza fornitore')}</span></div>` : ''}${f.sede ? '' : perSede}</td>
+        const cf = art ? Core.confezioniDi(art, r.daOrdinare) : '';
+        const conf = art && art.confezione ? `<div class="persede conf"><span>Confezione da ${fq(art.confezione.qta, art.confezione.unita)}${cf ? ' → <b>' + esc(cf.split(' × ')[0]) + ' conf.</b>' : r.daOrdinare > 0 ? ' · <span class="warn">non è un multiplo</span>' : ''}</span>${r.netto != null && r.suggerito > r.netto ? `<span>ne servono ${fq(r.netto, r.unita)}</span>` : ''}</div>` : '';
+        h += `<tr><td title="${esc(tip)}"><div class="nome">${esc(r.nome)}${r.extra ? ' <span class="tag">extra</span>' : ''}${r.errori.length ? ` <span class="tag warn" title="${esc(r.errori.join('\n'))}">conversione mancante</span>` : ''}</div>${conf}${ui.odVista !== 'forn' && !f.forn ? `<div class="persede"><span>${esc(r.fornitore || 'senza fornitore')}</span></div>` : ''}${f.sede ? '' : perSede}</td>
           <td class="n" data-l="Fabbisogno${f.sede ? ' ' + esc(f.sede === '—' ? '' : f.sede) : ''}">${fq(fabb, r.unita)}</td>
           <td class="n ${giac > 0 ? '' : 'muted'}" data-l="In magazzino">${fq(giac, r.unita)}</td>
           <td class="n" data-l="${chiuso ? 'Ricevuto' : 'Da ordinare'}">${chiuso ? `<b>${fq(r.ricevuto ?? r.daOrdinare, r.unita)}</b>` : `<span class="qin"><input class="q ${r.manuale ? 'man' : ''} ${r.daOrdinare > 0 ? '' : 'zero'}" data-q="${r.articoloId}" inputmode="decimal" value="${String(r.daOrdinare).replace('.', ',')}" aria-label="Da ordinare"><span class="muted">${ul(r.unita)}</span></span>`}</td></tr>`;
@@ -747,7 +755,7 @@
     let corpo = `<h1>Ordine ${esc(o.nome || '')} – settimana del ${Core.fmtData(o.settimana)}</h1><div class="sub">Stampato il ${new Date().toLocaleDateString('it-IT')}${ui.od.forn || ui.od.cat ? ' · filtri: ' + esc([ui.od.forn, ui.od.cat].filter(Boolean).join(', ')) : ''}</div><div class="piani">${pianiOrdine(o)}</div>`;
     for (const [forn, rr] of per) corpo += `<h2>${esc(forn)}</h2><table><tr><th>Prodotto</th><th class="n">Fabbisogno</th><th class="n">In magazzino</th><th class="n">Da ordinare</th><th>✓</th></tr>${rr.map(r => {
       const art = Core.byId(S.articoli, r.articoloId);
-      return `<tr><td>${esc(r.nome)}</td><td class="n">${fq(r.fabbisogno, r.unita)}</td><td class="n">${fq(art ? art.giacenza : r.giacenza, r.unita)}</td><td class="n b">${r.daOrdinare > 0 ? fq(r.daOrdinare, r.unita) : '—'}</td><td>☐</td></tr>`;
+      return `<tr><td>${esc(r.nome)}</td><td class="n">${fq(r.fabbisogno, r.unita)}</td><td class="n">${fq(art ? art.giacenza : r.giacenza, r.unita)}</td><td class="n b">${r.daOrdinare > 0 ? fq(r.daOrdinare, r.unita) + (art && Core.confezioniDi(art, r.daOrdinare) ? `<br><small>${esc(Core.confezioniDi(art, r.daOrdinare))}</small>` : '') : '—'}</td><td>☐</td></tr>`;
     }).join('')}</table>`;
     const qb = Core.qbOrdine(S, o);
     if (qb.length) corpo += `<p><b>Da controllare (q.b.):</b> ${qb.map(q => esc(q.nome)).join(', ')}</p>`;

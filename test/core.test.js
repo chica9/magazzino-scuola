@@ -343,4 +343,32 @@ test('«Carne e pesce» diventa «Carne» e «Pesce»', () => {
   assert.strictEqual(C.indovinaCategoria('Cipolla rossa'), 'Frutta e verdura');  // «rossa» non è «ossa»
 });
 
+test('unità minima d\'acquisto: l\'ordine arrotonda ai multipli', () => {
+  const s = C.emptyState();
+  s.impostazioni.sedi = ['Centro', 'Nord']; s.impostazioni.sedeCentrale = 'Centro';
+  const farina = C.addArticolo(s, { nome: 'Farina 00', unita: 'kg', confezione: { qta: 5, unita: 'kg' } });
+  const burro = C.addArticolo(s, { nome: 'Burro', unita: 'kg', confezione: { qta: 250, unita: 'g' }, giacenza: 0.1 });
+  const limoni = C.addArticolo(s, { nome: 'Limoni', unita: 'kg', pezzo: { qta: 120, unita: 'g' }, confezione: { qta: 10, unita: 'pz' } });
+  const acqua = C.addArticolo(s, { nome: 'Acqua naturale', unita: 'bott', confezione: { qta: 6, unita: 'pz' } });
+  const p = C.addPiano(s, { nome: 'P', righe: [
+    { articoloId: farina.id, qta: 3.6, unita: 'kg' }, { articoloId: burro.id, qta: 400, unita: 'g' },
+    { articoloId: limoni.id, qta: 1, unita: 'kg' }, { articoloId: acqua.id, qta: 7, unita: 'bott' }] });
+  const o = C.addOrdine(s, { voci: [{ pianoId: p.id, classi: 1, sede: 'Centro' }, { pianoId: p.id, classi: 1, sede: 'Nord' }] });
+  const r = id => o.righe.find(x => x.articoloId === id);
+  assert.deepStrictEqual([r(farina.id).netto, r(farina.id).daOrdinare], [7.2, 10]);       // 2 sacchi da 5 kg
+  assert.deepStrictEqual([r(burro.id).netto, r(burro.id).daOrdinare], [0.7, 0.75]);       // 0,4 Nord + (0,4 − 0,1) → 3 panetti
+  assert.strictEqual(r(limoni.id).daOrdinare, 2.4);                                       // 2 kg → retine da 10 limoni (1,2 kg)
+  assert.strictEqual(r(acqua.id).daOrdinare, 18);                                         // 14 bottiglie → 3 casse da 6
+  assert.strictEqual(C.confezioniDi(farina, 10), '2 × 5 kg');
+  assert.strictEqual(C.confezioniDi(farina, 8), '');                                      // cambiato a mano: non multiplo
+  assert.match(C.testoOrdine(s, o.id, null), /Farina 00: 10 kg \(2 × 5 kg\)/);
+  // alla ricezione l'eccedenza della confezione resta al magazzino centrale
+  assert.strictEqual(C.quotaMagazzino(r(farina.id)), 6.4);                                // 10 − 3,6 per Nord
+  // import: colonna «Confezione»
+  const doc = { nomeFile: 'p.xlsx', testo: [], tabelle: [[['Nome', 'U.M.', 'Confezione', 'Scorta minima'], ['Zucchero semolato', 'kg', '10 kg', '2'], ['Uova', 'pz', '30', '']]] };
+  const an = I.analizzaArticoli(s, doc);
+  assert.deepStrictEqual(an.voci.map(v => v.confezione), [{ qta: 10, unita: 'kg' }, { qta: 30, unita: 'pz' }]);
+  assert.strictEqual(an.voci[0].scorta, '2');
+});
+
 run();
