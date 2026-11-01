@@ -151,6 +151,25 @@
     return '';
   }
 
+  // «Frutta e verdura» si mostra divisa in Frutta / Verdura: indovinato dal nome, correggibile sul prodotto (campo sotto).
+  const FV = 'Frutta e verdura';
+  const FRUTTA_RE = /\b(limon|lime\b|aranc|mandarin|clementin|pompelm|cedr[oi]\b|\bmel[ae]\b|\bper[ae]\b|banan|fragol|kiwi|ananas|\buva\b|pesch|albicocc|ciliegi|amaren|prugn|susin|\bfich|melone|anguria|cocomer|mango|papaya|cocco|melagran|melogran|avocado|frutti di bosco|lampon|ribes|mirtill|more\b|kachi|cachi|frutta)/;
+  function sottogruppo(a) {
+    if (!a || a.categoria !== FV) return '';
+    return a.sotto === 'Frutta' || a.sotto === 'Verdura' ? a.sotto : FRUTTA_RE.test(normNome(a.nome)) ? 'Frutta' : 'Verdura';
+  }
+  /** Gruppo per le liste «per categoria»: la categoria, oppure Frutta / Verdura. */
+  function gruppoCategoria(a) { return sottogruppo(a) || a.categoria || 'Altro'; }
+  /** Ordina per gruppo (nell'ordine delle categorie in Impostazioni) e poi per nome. art(x) dà il prodotto da cui leggere categoria e nome. */
+  function ordinaPerCategoria(state, items, art = x => x) {
+    const gruppi = [];
+    for (const c of state.impostazioni.categorie) if (c === FV) gruppi.push('Frutta', 'Verdura'); else gruppi.push(c);
+    const idx = g => { const i = gruppi.indexOf(g); return i < 0 ? 999 : i; };
+    return items.map(x => ({ x, g: gruppoCategoria(art(x) || x) }))
+      .sort((a, b) => idx(a.g) - idx(b.g) || a.g.localeCompare(b.g) || (a.x.nome || '').localeCompare(b.x.nome || ''))
+      .map(({ x, g }) => ({ item: x, gruppo: g }));
+  }
+
   // Pesi/contenuti tipici: proposte di conversione (sempre modificabili).
   const PEZZI_TIPICI = [
     [/\baglio/, { qta: 50, unita: 'g' }], [/\blimon/, { qta: 120, unita: 'g' }], [/\baranc/, { qta: 200, unita: 'g' }],
@@ -252,7 +271,7 @@
     const art = touch({
       id: a.id || newId(), nome: capitalizzaSeVuoto(a.nome), categoria: a.categoria || indovinaCategoria(a.nome) || 'Altro',
       unita: normUnit(a.unita), giacenza: num(a.giacenza), scortaMinima: num(a.scortaMinima),
-      fornitore: a.fornitore || '', note: a.note || '', pezzo: pulisciPezzo(a.pezzo), alias: (a.alias || []).map(normNome).filter(Boolean),
+      fornitore: a.fornitore || '', note: a.note || '', sotto: a.sotto || '', pezzo: pulisciPezzo(a.pezzo), alias: (a.alias || []).map(normNome).filter(Boolean),
     });
     if (!art.nome) throw new Error('Nome articolo obbligatorio');
     state.articoli.push(art);
@@ -657,7 +676,7 @@
   }
 
   return { VERSION, UNITS, UNIT_LIST, CLASSI, CATEGORIE_DEFAULT, parseUnit, normUnit, convert, fmtQty, unitLabel, parseQta,
-    normNome, somiglianza, capitalizza, indovinaCategoria, pezzoTipico, siPesa, unitaMagazzino,
+    normNome, somiglianza, capitalizza, indovinaCategoria, sottogruppo, gruppoCategoria, ordinaPerCategoria, pezzoTipico, siPesa, unitaMagazzino,
     newId, emptyState, migrate, byId, live, num, round3, aggiungiVoce, rimuoviVoce, trovaFornitore,
     addArticolo, updateArticolo, deleteArticolo, aggiungiAlias, trovaArticolo, movimento, sottoScorta,
     addPiano, updatePiano, deletePiano, fabbisogno, scaricaPiano,

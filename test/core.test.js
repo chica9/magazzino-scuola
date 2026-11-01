@@ -315,4 +315,19 @@ test('import prodotti: ricorda la sezione abbinata a un fornitore', () => {
   assert.strictEqual(I.analizzaArticoli(s, doc).sezioni[0].fornitore, 'Frutta Srl');
 });
 
+test('frutta e verdura divise e ordinamento per categoria', () => {
+  const s = C.emptyState();
+  const add = (nome, extra) => C.addArticolo(s, { nome, unita: 'kg', ...extra });
+  add('Zucchine'); add('Limoni'); add('Farina 00'); add('Arance'); add('Carote'); add('Melanzane');
+  const pom = add('Pomodorini', { sotto: 'Frutta' });                         // scelta a mano: vince sull'automatico
+  assert.strictEqual(C.sottogruppo(C.live(s.articoli).find(a => a.nome === 'Melanzane')), 'Verdura');
+  assert.strictEqual(C.sottogruppo(pom), 'Frutta');
+  assert.strictEqual(C.gruppoCategoria(C.live(s.articoli).find(a => a.nome === 'Farina 00')), 'Farine, pasta e riso');
+  const ord = C.ordinaPerCategoria(s, C.live(s.articoli)).map(x => x.gruppo + ':' + x.item.nome);
+  const fr = ord.filter(x => x.startsWith('Frutta:')), ve = ord.filter(x => x.startsWith('Verdura:'));
+  assert.deepStrictEqual(fr, ['Frutta:Arance', 'Frutta:Limoni', 'Frutta:Pomodorini']);
+  assert.deepStrictEqual(ve, ['Verdura:Carote', 'Verdura:Melanzane', 'Verdura:Zucchine']);
+  assert.ok(ord.indexOf(fr[2]) < ord.indexOf(ve[0]));                        // Frutta prima di Verdura, gruppi contigui
+});
+
 run();

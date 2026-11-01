@@ -1,7 +1,7 @@
 /* app.js — interfaccia del Magazzino scolastico. Logica in core.js, import in importa.js/leggi.js, sync in github.js. */
 (function () {
   'use strict';
-  const APP_VERSION = '2.0.0';
+  const APP_VERSION = '2.1.0';
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -10,11 +10,16 @@
   const opts = (list, sel, vuoto) => (vuoto != null ? `<option value="">${esc(vuoto)}</option>` : '') + list.map(v => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(v)}</option>`).join('');
   const unitOpts = (sel, solo) => (solo || Core.UNIT_LIST).map(u => `<option value="${u}" ${u === sel ? 'selected' : ''}>${Core.UNITS[u].label}</option>`).join('');
   const UNITA_MISURA = ['g', 'kg', 'ml', 'cl', 'l'];
+  const VISTE_DISPENSA = [['cat', 'Per categoria'], ['alfa', 'Dalla A alla Z']];
+  const VISTE_ORDINE = [['forn', 'Per fornitore'], ['cat', 'Per categoria'], ['alfa', 'Dalla A alla Z']];
 
   // ---------- Stato ----------
   let S = load();
   let tab = 'dispensa';
-  const ui = { search: '', cat: '', forn: '', soloSotto: false, pSearch: '', pClasse: '', pMateria: '', ordFiltro: 'aperti', ordSede: '', od: { forn: '', cat: '', sede: '' } };
+  const ui = { search: '', cat: '', forn: '', soloSotto: false, pSearch: '', pClasse: '', pMateria: '', ordFiltro: 'aperti', ordSede: '', od: { forn: '', cat: '', sede: '' },
+    vista: leggiPref('mag.vista', 'cat'), odVista: leggiPref('mag.odVista', 'forn') };
+  function leggiPref(k, def) { try { return localStorage.getItem(k) || def; } catch (e) { return def; } }
+  function salvaPref(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* solo comodità */ } }
 
   function load() {
     try { const raw = localStorage.getItem('mag.state'); if (raw) return Core.migrate(JSON.parse(raw)); } catch (e) { console.error(e); }
@@ -148,25 +153,25 @@
       <div class="filters">
         <select data-f="cat" class="${ui.cat ? 'on' : ''}">${opts(cats, ui.cat, 'Tutte le categorie')}</select>
         <select data-f="forn" class="${ui.forn ? 'on' : ''}">${opts([...S.impostazioni.fornitori, '—'], ui.forn, 'Tutti i fornitori').replace('>—<', '>Senza fornitore<')}</select>
+        <select data-f="vista" aria-label="Ordina">${VISTE_DISPENSA.map(([k, l]) => `<option value="${k}" ${ui.vista === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <button class="chip warn ${ui.soloSotto ? 'on' : ''}" data-act="sotto">Sotto scorta</button>
         ${ui.cat || ui.forn || ui.soloSotto || ui.search ? '<button class="chip link" data-act="azzera">Azzera filtri</button>' : ''}
       </div>`;
     if (!arts.length) return html + `<div class="empty"><b>La dispensa è vuota</b>Aggiungi i prodotti con il tasto <b>+</b> oppure importali da un file Excel, CSV, Word o PDF con «Importa da file».</div>`;
     if (!list.length) return html + `<div class="empty">Nessun prodotto corrisponde ai filtri.</div>`;
-    const groups = new Map();
-    for (const a of list) { if (!groups.has(a.categoria)) groups.set(a.categoria, []); groups.get(a.categoria).push(a); }
-    const ordineCat = c => { const i = cats.indexOf(c); return i < 0 ? 999 : i; };
-    for (const [cat, items] of [...groups].sort((a, b) => ordineCat(a[0]) - ordineCat(b[0]))) {
-      html += `<h2>${esc(cat)} <span class="count">${items.length}</span></h2><div class="card list">` + items.map(a => {
-        const low = a.scortaMinima > 0 && a.giacenza < a.scortaMinima;
-        return `<div class="item ${low ? 'low' : ''}" data-art="${a.id}">
+    const riga = (a, conCat) => {
+      const low = a.scortaMinima > 0 && a.giacenza < a.scortaMinima;
+      return `<div class="item ${low ? 'low' : ''}" data-art="${a.id}">
           <div class="grow"><div class="title">${esc(a.nome)}</div>
-          <div class="muted">${a.fornitore ? esc(a.fornitore) : '<i>nessun fornitore</i>'}${a.scortaMinima ? ' · min ' + fq(a.scortaMinima, a.unita) : ''}</div></div>
+          <div class="muted">${conCat ? esc(Core.gruppoCategoria(a)) + ' · ' : ''}${a.fornitore ? esc(a.fornitore) : '<i>nessun fornitore</i>'}${a.scortaMinima ? ' · min ' + fq(a.scortaMinima, a.unita) : ''}</div></div>
           <div class="qty">${fq(a.giacenza, a.unita)}${low ? '<small>sotto scorta</small>' : ''}</div>
           <button class="btn sec icon" data-mov="${a.id}" title="Carico / scarico / inventario" aria-label="Carico o scarico">±</button>
         </div>`;
-      }).join('') + '</div>';
-    }
+    };
+    if (ui.vista === 'alfa') return html + `<h2>Dalla A alla Z <span class="count">${list.length}</span></h2><div class="card list">${list.map(a => riga(a, true)).join('')}</div>`;
+    const groups = new Map();
+    for (const { item, gruppo } of Core.ordinaPerCategoria(S, list)) { if (!groups.has(gruppo)) groups.set(gruppo, []); groups.get(gruppo).push(item); }
+    for (const [gruppo, items] of groups) html += `<h2>${esc(gruppo)} <span class="count">${items.length}</span></h2><div class="card list">${items.map(a => riga(a)).join('')}</div>`;
     return html;
   }
 
@@ -182,6 +187,9 @@
           <label class="f">Categoria<select name="categoria">${opts(cats, v.categoria || Core.indovinaCategoria(v.nome) || 'Altro')}</select></label>
           <label class="f">Unità di magazzino<select name="unita">${unitOpts(v.unita)}</select></label>
         </div>
+        <label class="f" id="fvSotto" ${(v.categoria || Core.indovinaCategoria(v.nome)) === 'Frutta e verdura' ? '' : 'hidden'}>Frutta o verdura?<select name="sotto">
+          <option value="">Automatico (${Core.sottogruppo({ ...v, categoria: 'Frutta e verdura', sotto: '' })})</option>
+          ${['Frutta', 'Verdura'].map(x => `<option ${v.sotto === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
         <div class="grid2">
           <label class="f">${a ? 'Giacenza attuale' : 'Giacenza iniziale'}<input name="giacenza" inputmode="decimal" value="${a ? a.giacenza : ''}" placeholder="0"></label>
           <label class="f">Scorta minima<input name="scortaMinima" inputmode="decimal" value="${a?.scortaMinima || ''}" placeholder="avviso sotto…"></label>
@@ -206,7 +214,7 @@
         let art;
         if (a) {
           const g = Core.num(d.giacenza);
-          Core.updateArticolo(S, a.id, { nome: d.nome, categoria: d.categoria, unita: d.unita, scortaMinima: d.scortaMinima, fornitore: d.fornitore, note: d.note, pezzo });
+          Core.updateArticolo(S, a.id, { nome: d.nome, categoria: d.categoria, sotto: d.sotto || '', unita: d.unita, scortaMinima: d.scortaMinima, fornitore: d.fornitore, note: d.note, pezzo });
           if (g !== a.giacenza) Core.movimento(S, a.id, g, 'rettifica', 'Modifica manuale');
           art = a;
         } else art = Core.addArticolo(S, { ...d, pezzo });
@@ -214,6 +222,7 @@
         if (preset && preset.onCreate) preset.onCreate(art);
       } catch (err) { toast(err.message); }
     };
+    sheet.onchange = e => { if (e.target.name === 'categoria') $('#fvSotto').hidden = e.target.value !== 'Frutta e verdura'; };
     sheet.onclick = e => {
       const da = e.target.closest('[data-delalias]');
       if (da && a) { a.alias = a.alias.filter(x => x !== da.dataset.delalias); a.u = new Date().toISOString(); save({ silent: true }); da.closest('.chip').remove(); }
@@ -591,6 +600,14 @@
     return o.righe.filter(r => (!f.forn || (r.fornitore || '—') === f.forn) && (!f.cat || r.categoria === f.cat) && (!f.sede || ((r.perSede || {})[f.sede === '—' ? '' : f.sede] || 0) > 0));
   }
 
+  /** Righe filtrate nell'ordine scelto, ognuna con il gruppo da mostrare come intestazione ('' = nessuna). */
+  function righeOrdinate(o) {
+    const righe = righeFiltrate(o);
+    if (ui.odVista === 'cat') return Core.ordinaPerCategoria(S, righe, r => Core.byId(S.articoli, r.articoloId)).map(({ item, gruppo }) => ({ r: item, gruppo }));
+    if (ui.odVista === 'alfa') return righe.slice().sort((a, b) => a.nome.localeCompare(b.nome)).map(r => ({ r, gruppo: '' }));
+    return righe.map(r => ({ r, gruppo: r.fornitore || 'Senza fornitore' }));
+  }
+
   function openOrdine(id) {
     const o = Core.byId(S.ordini, id);
     const chiuso = o.stato === 'ricevuto';
@@ -605,18 +622,18 @@
     const qbList = Core.qbOrdine(S, o);
     const sc = S.impostazioni.sedeCentrale;
     const righeHtml = () => {
-      const righe = righeFiltrate(o);
+      const righe = righeOrdinate(o);
       if (!righe.length) return `<tr><td colspan="4" class="empty">Nessun prodotto con questi filtri.</td></tr>`;
       let last = null, h = '';
-      for (const r of righe) {
-        if ((r.fornitore || '') !== last) { last = r.fornitore || ''; h += `<tr class="grp"><th colspan="4">${esc(last || 'Senza fornitore')}</th></tr>`; }
+      for (const { r, gruppo } of righe) {
+        if (gruppo && gruppo !== last) { last = gruppo; h += `<tr class="grp"><th colspan="4">${esc(gruppo)}</th></tr>`; }
         const art = Core.byId(S.articoli, r.articoloId);
         const giac = art ? art.giacenza : r.giacenza;
         const ps = Object.entries(r.perSede || {}).filter(([, q]) => q > 0);
         const perSede = ps.length > 1 || (ps.length === 1 && ps[0][0]) ? `<div class="persede">${ps.map(([s, q]) => `<span>${s && s === sc ? '<b>' + esc(s) + '</b> (magazzino)' : esc(s || 'sede non indicata')}: ${fq(q, r.unita)}</span>`).join('')}</div>` : '';
         const tip = r.dettaglio.map(d => `${d.nome} × ${d.classi}${d.sede ? ' (' + d.sede + ')' : ''}: ${fq(d.qta, r.unita)}`).join('\n');
         const fabb = f.sede ? (r.perSede || {})[sedeKey] || 0 : r.fabbisogno;
-        h += `<tr><td title="${esc(tip)}"><div class="nome">${esc(r.nome)}${r.extra ? ' <span class="tag">extra</span>' : ''}${r.errori.length ? ` <span class="tag warn" title="${esc(r.errori.join('\n'))}">conversione mancante</span>` : ''}</div>${f.sede ? '' : perSede}</td>
+        h += `<tr><td title="${esc(tip)}"><div class="nome">${esc(r.nome)}${r.extra ? ' <span class="tag">extra</span>' : ''}${r.errori.length ? ` <span class="tag warn" title="${esc(r.errori.join('\n'))}">conversione mancante</span>` : ''}</div>${ui.odVista !== 'forn' && !f.forn ? `<div class="persede"><span>${esc(r.fornitore || 'senza fornitore')}</span></div>` : ''}${f.sede ? '' : perSede}</td>
           <td class="n" data-l="Fabbisogno${f.sede ? ' ' + esc(f.sede === '—' ? '' : f.sede) : ''}">${fq(fabb, r.unita)}</td>
           <td class="n ${giac > 0 ? '' : 'muted'}" data-l="In magazzino">${fq(giac, r.unita)}</td>
           <td class="n" data-l="${chiuso ? 'Ricevuto' : 'Da ordinare'}">${chiuso ? `<b>${fq(r.ricevuto ?? r.daOrdinare, r.unita)}</b>` : `<span class="qin"><input class="q ${r.manuale ? 'man' : ''} ${r.daOrdinare > 0 ? '' : 'zero'}" data-q="${r.articoloId}" inputmode="decimal" value="${String(r.daOrdinare).replace('.', ',')}" aria-label="Da ordinare"><span class="muted">${ul(r.unita)}</span></span>`}</td></tr>`;
@@ -631,6 +648,7 @@
       <div class="filters" style="margin-top:12px">
         <select id="odForn" class="${f.forn ? 'on' : ''}">${opts(fornitori, f.forn, 'Tutti i fornitori').replace('>—<', '>Senza fornitore<')}</select>
         <select id="odCat" class="${f.cat ? 'on' : ''}">${opts(categorie, f.cat, 'Tutte le categorie')}</select>
+        <select id="odVista" aria-label="Raggruppa">${VISTE_ORDINE.map(([k, l]) => `<option value="${k}" ${ui.odVista === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
         ${sedi.length > 1 || sedi[0] ? `<select id="odSede" class="${f.sede ? 'on' : ''}">${opts(sedi.map(s => s || '—'), f.sede, 'Tutte le sedi').replace('>—<', '>Sede non indicata<')}</select>` : ''}
       </div>
       ${sc ? '' : S.impostazioni.sedi.length && (sedi.length > 1 || sedi[0]) ? `<div class="avviso forte">Non hai indicato quale sede è il magazzino centrale (Impostazioni → Sedi): per ora la giacenza viene scalata dal fabbisogno di tutte le sedi.</div>` : ''}
@@ -661,6 +679,7 @@
       if (t.id === 'odForn') { f.forn = t.value; return ridisegna(); }
       if (t.id === 'odCat') { f.cat = t.value; return ridisegna(); }
       if (t.id === 'odSede') { f.sede = t.value; return ridisegna(); }
+      if (t.id === 'odVista') { ui.odVista = t.value; salvaPref('mag.odVista', t.value); return ridisegna(); }
       if (chiuso) return;
       if (t.dataset.q) {
         Core.setDaOrdinare(S, o.id, t.dataset.q, t.value); save({ silent: true });
@@ -723,8 +742,8 @@
   }
   const pianiOrdine = o => o.voci.map(v => { const p = Core.byId(S.piani, v.pianoId) || S.piani.find(x => x.id === v.pianoId); return p ? `${esc(p.nome)}${p.classe ? ' [' + esc(p.classe) + ']' : ''} × ${v.classi}${v.sede ? ' – ' + esc(v.sede) : ''}` : ''; }).filter(Boolean).join('<br>');
   function stampaOrdine(o) {
-    const rows = righeFiltrate(o).filter(r => r.daOrdinare > 0 || r.fabbisogno > 0);
-    const per = new Map(); for (const r of rows) { const k = r.fornitore || 'Senza fornitore'; if (!per.has(k)) per.set(k, []); per.get(k).push(r); }
+    const rows = righeOrdinate(o).map(x => x.r).filter(r => r.daOrdinare > 0 || r.fabbisogno > 0);
+    const per = new Map(); for (const r of rows.sort((a, b) => (a.fornitore || '￿').localeCompare(b.fornitore || '￿'))) { const k = r.fornitore || 'Senza fornitore'; if (!per.has(k)) per.set(k, []); per.get(k).push(r); }
     let corpo = `<h1>Ordine ${esc(o.nome || '')} – settimana del ${Core.fmtData(o.settimana)}</h1><div class="sub">Stampato il ${new Date().toLocaleDateString('it-IT')}${ui.od.forn || ui.od.cat ? ' · filtri: ' + esc([ui.od.forn, ui.od.cat].filter(Boolean).join(', ')) : ''}</div><div class="piani">${pianiOrdine(o)}</div>`;
     for (const [forn, rr] of per) corpo += `<h2>${esc(forn)}</h2><table><tr><th>Prodotto</th><th class="n">Fabbisogno</th><th class="n">In magazzino</th><th class="n">Da ordinare</th><th>✓</th></tr>${rr.map(r => {
       const art = Core.byId(S.articoli, r.articoloId);
@@ -810,7 +829,7 @@
   });
   main.addEventListener('change', e => {
     const t = e.target;
-    if (t.dataset.f) { ui[t.dataset.f] = t.value; render(); return; }
+    if (t.dataset.f) { ui[t.dataset.f] = t.value; if (t.dataset.f === 'vista') salvaPref('mag.vista', t.value); render(); return; }
     if (t.hasAttribute('data-sedecentrale')) { S.impostazioni.sedeCentrale = t.value; S.impostazioni.u = new Date().toISOString(); save(); toast(t.value ? `Magazzino centrale: ${t.value}` : 'Sede centrale non impostata'); return; }
     if (t.dataset.of) { ui.ordFiltro = t.dataset.of; render(); }
   });
