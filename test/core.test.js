@@ -330,4 +330,14 @@ test('frutta e verdura divise e ordinamento per categoria', () => {
   assert.ok(ord.indexOf(fr[2]) < ord.indexOf(ve[0]));                        // Frutta prima di Verdura, gruppi contigui
 });
 
+test('«Carne e pesce» diventa «Carne» e «Pesce»', () => {
+  const vecchio = { impostazioni: { categorie: ['Frutta e verdura', 'Carne e pesce', 'Altro'] },
+    articoli: [{ id: 'a', nome: 'Petto di pollo', categoria: 'Carne e pesce', u: '2026-01-01' }, { id: 'b', nome: 'Gamberi', categoria: 'Carne e pesce', u: '2026-01-01' }] };
+  const s = C.migrate(vecchio);
+  assert.deepStrictEqual(s.impostazioni.categorie, ['Frutta e verdura', 'Carne', 'Pesce', 'Altro']);
+  assert.deepStrictEqual(s.articoli.map(a => a.categoria), ['Carne', 'Pesce']);
+  assert.ok(s.articoli[0].u > '2026-01-01');                                     // toccati: il cambio si sincronizza
+  assert.strictEqual(C.indovinaCategoria('Cipolla rossa'), 'Frutta e verdura');  // «rossa» non è «ossa»
+});
+
 run();

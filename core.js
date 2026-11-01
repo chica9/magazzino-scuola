@@ -131,14 +131,17 @@
   }
 
   // ---------- Classificazione automatica ----------
-  const CATEGORIE_DEFAULT = ['Frutta e verdura', 'Carne e pesce', 'Latticini e uova', 'Farine, pasta e riso', 'Dispensa secca',
+  const CATEGORIE_DEFAULT = ['Frutta e verdura', 'Carne', 'Pesce', 'Latticini e uova', 'Farine, pasta e riso', 'Dispensa secca',
     'Spezie e aromi', 'Surgelati', 'Bevande e alcolici', 'Materiale di consumo', 'Altro'];
+  // il pesce ha un fornitore suo: categoria separata dalla carne
+  const PESCE_RE = /pesce|tonno|salmon|acciug|alici|gamber|scampi|calamar|totan|seppi|polp[oi]\b|cozze|vongol|frutti di mare|baccal|stoccafiss|merluzz|nasell|orat[ae]|spigol|branzin|sgombr|sard[ei]|trot[ae]|cernia|dentice|ricciol|pesce spada|aragost|astice|bottarga|surimi/;
   const CAT_REGOLE = [
     ['Surgelati', /surgel|congel/],
     ['Farine, pasta e riso', /farina|semola|manitoba|polesani|\bpasta\b|spaghett|linguine|penne|rigatoni|tagliatell|\briso\b|cous|amido|maizena|fecola|\bpane\b|pangrattato|lievito/],
     ['Bevande e alcolici', /\bvin[oi]\b|marsala|brandy|cognac|armagnac|\bporto\b|liquor|amaretto|crema di (cacao|menta)|cointreau|triple sec|angostura|sciropp|succo|birra|\brum\b|whisk|vodka|\bgin\b|grappa|spumante|prosecco|acqua (minerale|frizzante|naturale)|bibit|bagna|\balcol/],
     ['Materiale di consumo', /tovagliol|carta|sottovuoto|stamp[io]|domopak|sac a poche|sacapoche|sottotorta|sotto torta|pellicol|alluminio|guant|detersiv|staccante|bicchier|piatti|posate|vaschett|sacchett|spugn|rotol/],
-    ['Carne e pesce', /carne|pollo|manzo|vitello|maiale|agnello|lonza|coppa|salsicc|pancetta|prosciutt|speck|salame|mortadell|bresaola|fesa|filetto|\bali\b|cosc[ei]|petto|ossa|pesce|tonno|salmone|acciug|alici|gamber|calamar|cozze|vongol|baccal|merluzz|muscolo|macinat|fondo di vitello/],
+    ['Pesce', PESCE_RE],
+    ['Carne', /carne|pollo|manzo|vitello|maiale|agnello|lonza|coppa|salsicc|pancetta|prosciutt|speck|salame|mortadell|bresaola|fesa|filetto|\bali\b|cosc[ei]|petto|\bossa\b|muscolo|macinat|fondo di vitello|tacchino|coniglio|anatra|faraona/],
     ['Latticini e uova', /latte|panna|burro|uova|uovo|tuorl|albume|formagg|grana|parmigian|pecorino|mozzarell|ricotta|edamer|emmenthal|provola|scamorza|mascarpone|yogurt|fontina|caciocavall/],
     ['Spezie e aromi', /\bpepe\b|\bsale\b|noce moscata|cannella|chiodi di garofano|anice|vanigli|zafferano|paprica|curcuma|coriandol|spezie|origano|basilico|prezzemolo|rosmarino|salvia|\btimo\b|alloro|\bmenta\b|maggiorana|finocchietto|erba cipollina|\bdado\b|peperoncino|zenzero/],
     ['Dispensa secca', /zuccher|\bolio\b|aceto|cacao|caff|decaffein|cioccolat|marmellat|confettur|miele|pelati|polpa|passata|concentrat|\bolive\b|capperi|ceci|lenticch|mandorl|nocciol|pinoli|pistacch|\bnoci\b|uvetta|sultanina|gelatina|glucosio|destrosio|dietor|dolcific|strutto|margarina|sottolio|conserv/],
@@ -233,6 +236,10 @@
     if (typeof out.impostazioni.sedeCentrale !== 'string') out.impostazioni.sedeCentrale = '';
     if (!out.impostazioni.sezioni || typeof out.impostazioni.sezioni !== 'object') out.impostazioni.sezioni = {};
     for (const a of out.articoli) { if (!Array.isArray(a.alias)) a.alias = []; if (a.pezzo === undefined) a.pezzo = null; }
+    // «Carne e pesce» (fino alla 2.1) diventa «Carne» e «Pesce»
+    const cats = out.impostazioni.categorie, ic = cats.indexOf('Carne e pesce');
+    if (ic >= 0) { cats.splice(ic, 1, ...['Carne', 'Pesce'].filter(c => !cats.includes(c))); out.impostazioni.u = now(); }
+    for (const a of out.articoli) if (a.categoria === 'Carne e pesce') { a.categoria = PESCE_RE.test(normNome(a.nome)) ? 'Pesce' : 'Carne'; touch(a); }
     for (const p of out.piani) { if (!Array.isArray(p.qb)) p.qb = []; for (const k of ['classe', 'materia', 'lezione', 'file']) if (p[k] == null) p[k] = ''; }
     for (const o of out.ordini) for (const v of o.voci || []) if (v.sede == null) v.sede = '';
     out.version = VERSION;
