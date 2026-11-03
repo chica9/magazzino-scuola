@@ -1,7 +1,7 @@
 /* app.js — interfaccia del Magazzino scolastico. Logica in core.js, import in importa.js/leggi.js, sync in github.js. */
 (function () {
   'use strict';
-  const APP_VERSION = '2.7.0';
+  const APP_VERSION = '2.7.1';
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -788,18 +788,15 @@
     w.document.write(`<!doctype html><html lang="it"><head><meta charset="utf-8"><title>${esc(titolo)}</title><style>${STILE_STAMPA}</style></head><body>${corpo}<script>setTimeout(()=>print(),300)<\/script></body></html>`);
     w.document.close();
   }
-  const pianiOrdine = o => o.voci.map(v => { const p = Core.byId(S.piani, v.pianoId) || S.piani.find(x => x.id === v.pianoId); return p ? `${esc(p.nome)}${p.classe ? ' [' + esc(p.classe) + ']' : ''} × ${v.classi}${v.sede ? ' – ' + esc(v.sede) : ''}` : ''; }).filter(Boolean).join('<br>');
+  // Sabato della settimana dell'ordine (la settimana parte dal lunedì).
+  const fineSettimana = iso => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + 5); return Core.fmtData(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`); };
   function stampaOrdine(o) {
-    const rows = righeOrdinate(o).map(x => x.r).filter(r => r.daOrdinare > 0 || r.fabbisogno > 0);
-    const per = new Map(); for (const r of rows.sort((a, b) => (a.fornitore || '￿').localeCompare(b.fornitore || '￿'))) { const k = r.fornitore || 'Senza fornitore'; if (!per.has(k)) per.set(k, []); per.get(k).push(r); }
-    let corpo = `<h1>Ordine ${esc(o.nome || '')} – settimana del ${Core.fmtData(o.settimana)}</h1><div class="sub">Stampato il ${new Date().toLocaleDateString('it-IT')}${ui.od.forn || ui.od.cat ? ' · filtri: ' + esc([ui.od.forn, ui.od.cat].filter(Boolean).join(', ')) : ''}</div><div class="piani">${pianiOrdine(o)}</div>`;
-    for (const [forn, rr] of per) corpo += `<h2>${esc(forn)}</h2><table><tr><th>Prodotto</th><th class="n">Fabbisogno</th><th class="n">In magazzino</th><th class="n">Da ordinare</th><th>✓</th></tr>${rr.map(r => {
-      const art = Core.byId(S.articoli, r.articoloId);
-      return `<tr><td>${esc(r.nome)}</td><td class="n">${fq(r.fabbisogno, r.unita)}</td><td class="n">${fq(art ? art.giacenza : r.giacenza, r.unita)}</td><td class="n b">${r.daOrdinare > 0 ? fq(r.daOrdinare, r.unita) + (art && Core.confezioniDi(art, r.daOrdinare) ? `<br><small>${esc(Core.confezioniDi(art, r.daOrdinare))}</small>` : '') : '—'}</td><td>☐</td></tr>`;
-    }).join('')}</table>`;
-    const qb = Core.qbOrdine(S, o);
-    if (qb.length) corpo += `<p><b>Da controllare (q.b.):</b> ${qb.map(q => esc(q.nome)).join(', ')}</p>`;
-    if (o.note) corpo += `<p><b>Note:</b> ${esc(o.note)}</p>`;
+    const rows = righeOrdinate(o).map(x => x.r).filter(r => r.daOrdinare > 0)
+      .sort((a, b) => (a.fornitore || '\uffff').localeCompare(b.fornitore || '\uffff') || a.nome.localeCompare(b.nome));
+    const per = new Map(); for (const r of rows) { const k = r.fornitore || 'Senza fornitore'; if (!per.has(k)) per.set(k, []); per.get(k).push(r); }
+    let corpo = `<h1>Piani di lavoro dal ${Core.fmtData(o.settimana)} al ${fineSettimana(o.settimana)}</h1>`;
+    for (const [forn, rr] of per) corpo += `<h2>${esc(forn)}</h2><table>${rr.map(r => `<tr><td>${esc(r.nome)}</td><td class="n b">${fq(r.daOrdinare, r.unita)}</td></tr>`).join('')}</table>`;
+    if (!rows.length) corpo += '<p>Niente da ordinare.</p>';
     finestraStampa('Ordine ' + Core.fmtData(o.settimana), corpo);
   }
   function stampaSedi(o) {
